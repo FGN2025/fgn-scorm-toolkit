@@ -60,8 +60,18 @@ Deno.serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Verify X-App-Key against authorized_apps. Only fgn-scorm-toolkit
-    // is allowed to call this function.
+    // /check is a runtime endpoint called by the SCORM Player on load to
+    // gate access. It runs unauthenticated by design — the SCORM package
+    // ships to external LMSs without any embedded app key. The endpoint
+    // discloses whether an email has an fgn.academy account and whether
+    // the user has completed a specific challenge. This is mild
+    // enumeration risk we accept for v0; rate limiting and Phase 2+
+    // hardening (per-package runtime token) address it.
+    if (req.method === 'POST' && path.endsWith('/check')) {
+      return await checkCompletion(req, supabase);
+    }
+
+    // All other routes (/mint, /status) require X-App-Key validation.
     const apiKey = req.headers.get('x-app-key');
     if (!apiKey) {
       return jsonError(401, 'Missing X-App-Key header');
@@ -241,6 +251,123 @@ async function findCompletion(
 
   if (cErr || !completion) return null;
   return completion as { status: string; score: number | null; completed_at: string | null };
+}
+
+// =====================================================================
+// /check — runtime endpoint called by the SCORM Player on load
+// =====================================================================
+//
+// Unlike /mint and /status, /check requires no X-App-Key (the SCORM
+// package would have to embed the key, leaking it to anyone with the
+// ZIP — worse than the enumeration risk this endpoint introduces).
+//
+// Reveals: whether (email, challenge_id) corresponds to an fgn.academy
+// account that has completed the challenge. Used by the Player to
+// decide locked vs unlocked vs needs-passport-creation states.
+//
+// Body: { challengeId, scormStudentId }
+// Returns:
+//   {
+//     userExists: boolean,
+//     completed: boolean,
+//     completedAt?: string,
+//     score?: number,
+//     workOrderTitle?: string,
+//     workOrderUrl?: string
+//   }
+
+interface CheckBody {
+  challengeId: string;
+  scormStudentId: string;
+}
+
+async function checkCompletion(
+  req: Request,
+  supabase: ReturnType<typeof createClient>,
+): Promise<Response> {
+  let body: CheckBody;
+  try {
+    body = (await req.json()) as CheckBody;
+  } catch {
+    return jsonError(400, 'Invalid JSON body');
+  }
+
+  if (!body.challengeId || !body.scormStudentId) {
+    return jsonError(400, 'challengeId and scormStudentId are required');
+  }
+
+  // Step 1: does an fgn.academy account exist for this email?
+  const { data: userId, error: userErr } = await supabase.rpc('get_user_id_by_email', {
+    p_email: body.scormStudentId,
+  });
+  if (userErr) {
+    return jsonError(500, `User lookup failed: ${userErr.message}`);
+  }
+
+  if (!userId) {
+    // No account — Player will render the "create FGN passport" CTA.
+    return jsonOk({
+      userExists: false,
+      completed: false,
+    });
+  }
+
+  // Step 2: is there a work_orders row for this challenge?
+  const { data: wo, error: woErr } = await supabase
+    .from('work_orders')
+    .select('id, title')
+    .eq('source_challenge_id', body.challengeId)
+    .maybeSingle();
+  if (woErr) {
+    return jsonError(500, `Work order lookup failed: ${woErr.message}`);
+  }
+
+  if (!wo) {
+    // Account exists but no one has ever completed the challenge — no
+    // work_orders row yet. Treat as "not completed" with a hint that
+    // the user should head to fgn.academy to start.
+    return jsonOk({
+      userExists: true,
+      completed: false,
+    });
+  }
+
+  const workOrder = wo as { id: string; title: string };
+  const workOrderUrl = `https://fgn.academy/work-orders/${workOrder.id}`;
+
+  // Step 3: is there a recent successful completion?
+  const { data: completion, error: cErr } = await supabase
+    .from('user_work_order_completions')
+    .select('status, score, completed_at')
+    .eq('user_id', userId as string)
+    .eq('work_order_id', workOrder.id)
+    .eq('status', 'completed')
+    .order('completed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (cErr) {
+    return jsonError(500, `Completion lookup failed: ${cErr.message}`);
+  }
+
+  if (!completion) {
+    return jsonOk({
+      userExists: true,
+      completed: false,
+      workOrderTitle: workOrder.title,
+      workOrderUrl,
+    });
+  }
+
+  const c = completion as { status: string; score: number | null; completed_at: string | null };
+  return jsonOk({
+    userExists: true,
+    completed: true,
+    completedAt: c.completed_at,
+    score: c.score,
+    workOrderTitle: workOrder.title,
+    workOrderUrl,
+  });
 }
 
 // =====================================================================

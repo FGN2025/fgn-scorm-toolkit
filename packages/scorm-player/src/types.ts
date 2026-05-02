@@ -23,4 +23,5 @@ export type {
   CourseWarning,
   GameTitle,
   Pillar,
+  WorkOrderCheckResult,
 } from '@fgn/course-types';

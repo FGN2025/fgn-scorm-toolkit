@@ -7,6 +7,12 @@ import { Wordmark } from './Wordmark';
  * Top-level layout for a SCORM Player session.
  * Header (logo + course title) | Sidebar (TOC) | Main pane (current module) | Footer (progress + nav)
  */
+export interface WorkOrderBadge {
+  completedAt?: string;
+  score?: number;
+  workOrderTitle?: string;
+}
+
 export function PlayerShell({
   course,
   mode,
@@ -15,6 +21,7 @@ export function PlayerShell({
   onSelectModule,
   onPrev,
   onNext,
+  workOrderBadge,
   children,
 }: {
   course: CourseManifest;
@@ -24,6 +31,7 @@ export function PlayerShell({
   onSelectModule: (id: string) => void;
   onPrev: () => void;
   onNext: () => void;
+  workOrderBadge?: WorkOrderBadge;
   children: React.ReactNode;
 }) {
   const completedCount = completedModuleIds.length;
@@ -43,6 +51,27 @@ export function PlayerShell({
         <Wordmark mode={mode} />
         <div className="h-6 w-px bg-border" />
         <h1 className="font-heading text-lg font-semibold tracking-wide">{course.title}</h1>
+        {workOrderBadge && (
+          <div
+            className="ml-auto inline-flex items-center gap-2 rounded-full border border-brand-primary/30 bg-brand-primary/10 px-3 py-1 text-xs font-medium text-brand-primary"
+            title={
+              workOrderBadge.workOrderTitle
+                ? `Verified completion of "${workOrderBadge.workOrderTitle}"`
+                : 'Verified Work Order completion'
+            }
+          >
+            <span aria-hidden className="text-base leading-none">✓</span>
+            <span>Work Order Completed</span>
+            {workOrderBadge.completedAt && (
+              <span className="text-foreground/60">
+                · {formatBadgeDate(workOrderBadge.completedAt)}
+              </span>
+            )}
+            {workOrderBadge.score !== undefined && workOrderBadge.score !== null && (
+              <span className="text-foreground/60">· {workOrderBadge.score}%</span>
+            )}
+          </div>
+        )}
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -105,6 +134,19 @@ export function PlayerShell({
       </footer>
     </div>
   );
+}
+
+function formatBadgeDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return iso;
+  }
 }
 
 function TocItem({

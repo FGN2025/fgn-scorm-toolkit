@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CourseManifest, ChallengeState, ProgressState } from './types';
+import type {
+  CourseManifest,
+  ChallengeState,
+  ProgressState,
+  WorkOrderCheckResult,
+} from './types';
 import { ScormSession } from './scorm/api';
 import { PlayerShell } from './components/PlayerShell';
+import { LockedState } from './components/LockedState';
 import { BriefingModule } from './modules/BriefingModule';
 import { ChallengeModule } from './modules/ChallengeModule';
 import { QuizModule } from './modules/QuizModule';
@@ -15,10 +21,21 @@ const INITIAL_PROGRESS: ProgressState = {
   challengeStates: {},
 };
 
+const DEFAULT_BRIDGE_ENDPOINT =
+  'https://vfzjfkcwromssjnlrhoo.supabase.co/functions/v1/scorm-launch-status';
+
+type GatingState =
+  | { phase: 'checking' }
+  | { phase: 'no-gate' } // course has no gatingChallengeId — render normally (legacy / hand-authored)
+  | { phase: 'locked'; check: WorkOrderCheckResult }
+  | { phase: 'unlocked'; check: WorkOrderCheckResult }
+  | { phase: 'check-failed'; reason: string }; // bridge unreachable; fail-open to render content
+
 export function App({ course }: { course: CourseManifest }) {
   const sessionRef = useRef<ScormSession | null>(null);
   const [progress, setProgress] = useState<ProgressState>(() => ({ ...INITIAL_PROGRESS }));
   const [studentId, setStudentId] = useState<string>('');
+  const [gating, setGating] = useState<GatingState>({ phase: 'checking' });
 
   // Bootstrap: open SCORM session, restore suspend_data, set initial module.
   useEffect(() => {
@@ -46,6 +63,52 @@ export function App({ course }: { course: CourseManifest }) {
       session.finish();
     };
   }, [course.modules]);
+
+  // Phase 1.5 gating: on load, check whether the learner has completed
+  // the prerequisite Work Order on fgn.academy. Fail-open if the bridge
+  // is unreachable so the content still renders (LMSs running offline,
+  // network blips, etc.).
+  useEffect(() => {
+    if (!studentId) return;
+    if (!course.gatingChallengeId) {
+      setGating({ phase: 'no-gate' });
+      return;
+    }
+    let cancelled = false;
+    const endpoint = course.bridgeEndpoint ?? DEFAULT_BRIDGE_ENDPOINT;
+    void fetch(`${endpoint}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        challengeId: course.gatingChallengeId,
+        scormStudentId: studentId,
+      }),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        return (await res.json()) as WorkOrderCheckResult;
+      })
+      .then((check) => {
+        if (cancelled) return;
+        setGating({
+          phase: check.completed ? 'unlocked' : 'locked',
+          check,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn(
+          '[scorm-player] /check failed; failing open and rendering content unconditionally.',
+          err,
+        );
+        setGating({ phase: 'check-failed', reason: String(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId, course.gatingChallengeId, course.bridgeEndpoint]);
 
   // Persist progress to suspend_data on every update.
   useEffect(() => {
@@ -130,6 +193,34 @@ export function App({ course }: { course: CourseManifest }) {
     return <div className="p-8 text-foreground">Course has no modules.</div>;
   }
 
+  // Locked state: gating check completed and the learner doesn't yet
+  // have a verified Work Order completion. Render the locked screen
+  // instead of the course content.
+  if (gating.phase === 'locked') {
+    return (
+      <LockedState
+        mode={course.brandMode}
+        courseTitle={course.title}
+        studentEmail={studentId}
+        challengeId={course.gatingChallengeId ?? ''}
+        check={gating.check}
+      />
+    );
+  }
+
+  // Checking phase: brief flash before /check resolves. Show a minimal
+  // shell rather than the full UI to avoid flashing locked-state-then-
+  // unlocked-state if the bridge is fast.
+  if (gating.phase === 'checking') {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background text-foreground">
+        <p className="font-heading text-sm uppercase tracking-widest text-muted-foreground">
+          Verifying Work Order completion…
+        </p>
+      </div>
+    );
+  }
+
   const renderModule = () => {
     switch (currentModule.type) {
       case 'briefing':
@@ -210,6 +301,24 @@ export function App({ course }: { course: CourseManifest }) {
     }
   };
 
+  // Pass the verified-completion badge to the shell when applicable.
+  // Shows "✓ Work Order Completed [date]" in the header. Falls back
+  // to nothing for legacy/no-gate courses.
+  const badge =
+    gating.phase === 'unlocked' && gating.check.completed
+      ? {
+          ...(gating.check.completedAt !== undefined
+            ? { completedAt: gating.check.completedAt }
+            : {}),
+          ...(gating.check.score !== undefined && gating.check.score !== null
+            ? { score: gating.check.score }
+            : {}),
+          ...(gating.check.workOrderTitle !== undefined
+            ? { workOrderTitle: gating.check.workOrderTitle }
+            : {}),
+        }
+      : undefined;
+
   return (
     <PlayerShell
       course={course}
@@ -219,6 +328,7 @@ export function App({ course }: { course: CourseManifest }) {
       onSelectModule={goTo}
       onPrev={() => goRelative(-1)}
       onNext={() => goRelative(1)}
+      {...(badge ? { workOrderBadge: badge } : {})}
     >
       {renderModule()}
     </PlayerShell>

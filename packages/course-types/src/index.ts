@@ -46,6 +46,21 @@ export interface CourseManifest {
   scormVersion: '1.2' | 'cmi5';
   /** Endpoint base URL for the launch-token bridge. */
   launchTokenEndpoint?: string;
+  /**
+   * Endpoint base URL for the completion-check bridge — the SCORM Player
+   * calls this on load to decide locked vs unlocked state.
+   * Default: https://vfzjfkcwromssjnlrhoo.supabase.co/functions/v1/scorm-launch-status
+   * The /check route is appended at runtime.
+   */
+  bridgeEndpoint?: string;
+  /**
+   * Logical reference to the source play.fgn.gg challenge that gates
+   * access to this course. The Player calls /check with this id +
+   * the learner's email (from cmi.core.student_id) to decide whether
+   * to unlock content. Required for any course produced by transform();
+   * absent only for hand-authored courses with no work_order prerequisite.
+   */
+  gatingChallengeId?: string;
   modules: CourseModule[];
 }
 
@@ -156,6 +171,27 @@ export type ScormLessonStatus =
   | 'incomplete'
   | 'browsed'
   | 'not attempted';
+
+/**
+ * Response shape from POST /scorm-launch-status/check.
+ *
+ * Drives the Player's gating UI:
+ *   userExists=false           → "Create FGN passport" CTA
+ *   userExists, !completed     → "Complete Work Order on fgn.academy" CTA
+ *   userExists, completed      → unlock + "✓ Work Order Completed" badge
+ */
+export interface WorkOrderCheckResult {
+  userExists: boolean;
+  completed: boolean;
+  /** ISO timestamp of the most recent successful completion. */
+  completedAt?: string;
+  /** Score as written by sync-challenge-completion (0..100). */
+  score?: number;
+  /** Title of the gating work_order on fgn.academy. */
+  workOrderTitle?: string;
+  /** Direct URL to the work_order page on fgn.academy for the locked-state CTA. */
+  workOrderUrl?: string;
+}
 
 /**
  * Warning surfaced by the transformer / publisher / packager. Admins
