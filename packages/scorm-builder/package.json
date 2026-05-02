@@ -1,0 +1,48 @@
+{
+  "name": "@fgn/scorm-builder",
+  "version": "0.1.0",
+  "description": "Two responsibilities: (1) transform play.fgn.gg challenges into a CourseManifest, (2) package a CourseManifest into a SCORM 1.2 ZIP. Designed to run inside a Supabase edge function as a stateless library, also runnable from a CLI for local testing.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./transform": {
+      "types": "./dist/transform.d.ts",
+      "import": "./dist/transform.js"
+    }
+  },
+  "bin": {
+    "fgn-scorm": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fgn/academy-publisher": "workspace:*",
+    "@fgn/brand-tokens": "workspace:*",
+    "@fgn/course-types": "workspace:*",
+    "jszip": "^3.10.1"
+  },
+  "peerDependencies": {
+    "@supabase/supabase-js": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@supabase/supabase-js": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "@types/jszip": "^3.4.0",
+    "typescript": "^5.5.4"
+  }
+}

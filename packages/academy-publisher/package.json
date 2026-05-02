@@ -1,0 +1,28 @@
+{
+  "name": "@fgn/academy-publisher",
+  "version": "0.2.0",
+  "description": "Publishes a CourseManifest to fgn.academy via the scorm-publish edge function. The native fgn.academy publish path; pairs with @fgn/scorm-builder for the SCORM ZIP path. No database credentials required client-side — the edge function holds the service role.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fgn/course-types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

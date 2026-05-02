@@ -1,0 +1,188 @@
+/*
+ * @fgn/brand-tokens — design tokens for FGN properties and SCORM packages.
+ *
+ * Two modes share one palette. The pillar colors are immutable across modes.
+ *
+ *   Arcade Mode    — dark surface, cyan CTA, neon glow, Orbitron headings.
+ *                    Default for play.fgn.gg and fgn.academy.
+ *
+ *   Enterprise Mode — light surface, violet CTA, elevation shadows, Inter only.
+ *                    Default for broadbandworkforce.com, employer LMSs,
+ *                    DOL/Impexium, fgn.business, and all SCORM packages
+ *                    destined for non-gaming audiences.
+ *
+ * Activation:
+ *   Arcade     — <html class="dark">           (or no class — :root defaults are Arcade)
+ *   Enterprise — <html class="light enterprise">
+ */
+
+/* === Pillar locks — IMMUTABLE across modes and tenants === */
+:root {
+  --brand-pillar-perf: 262 83% 58%;     /* violet  #7C3AED — Performance */
+  --brand-pillar-play: 180 100% 42%;    /* cyan    #00D4D4 — Play */
+  --brand-pillar-path: 38 92% 50%;      /* amber   #F59E0B — Pathways */
+  --brand-pillar-fiber: 214 100% 59%;   /* azure   #2E8BFF — Fiber / Network */
+
+  /* Status — immutable */
+  --success: 142 71% 45%;               /* #22C55E */
+  --warning: 38 92% 50%;                /* aligned with path pillar */
+  --destructive: 0 72% 51%;             /* #EF4444 */
+  --destructive-foreground: 0 0% 100%;
+
+  /* Radii — immutable */
+  --radius: 0.5rem;                     /* 8px — shadcn base */
+  --radius-card: 0.75rem;               /* 12px */
+  --radius-button: 0.625rem;            /* 10px */
+}
+
+/* ===================================================================== */
+/* Arcade Mode — defaults on :root and explicit on .dark                 */
+/* ===================================================================== */
+:root,
+.dark {
+  /* Surface */
+  --background: 216 28% 6%;             /* fgn.ink #0B0F14 */
+  --foreground: 180 10% 92%;
+  --card: 220 18% 8%;
+  --card-foreground: 180 10% 92%;
+  --popover: 220 18% 8%;
+  --popover-foreground: 180 10% 92%;
+  --surface-glass: 220 20% 10%;
+
+  /* Brand semantic — Arcade: cyan primary, violet secondary */
+  --brand-primary: 180 100% 42%;        /* play */
+  --brand-secondary: 262 83% 58%;       /* perf */
+
+  /* shadcn semantic */
+  --primary: 180 100% 42%;
+  --primary-foreground: 216 28% 6%;
+  --secondary: 220 15% 15%;
+  --secondary-foreground: 180 10% 85%;
+  --accent: 262 83% 58%;
+  --accent-foreground: 0 0% 100%;
+  --muted: 220 15% 12%;
+  --muted-foreground: 220 10% 55%;
+
+  /* System */
+  --border: 220 15% 16%;
+  --input: 220 15% 16%;
+  --ring: 180 100% 42%;
+
+  /* Effects — neon glow */
+  --neon-glow: 180 100% 50%;
+  --neon-accent: 262 83% 58%;
+  --shadow-glow-soft: 0 0 12px rgba(0, 212, 212, 0.10), 0 4px 20px rgba(0, 0, 0, 0.40);
+  --shadow-glow-cta: 0 0 5px rgba(0, 212, 212, 0.30), inset 0 0 5px rgba(0, 212, 212, 0.10);
+  --shadow-elevation-sm: none;
+  --shadow-elevation-md: none;
+  --shadow-elevation-lg: none;
+
+  /* Sidebar */
+  --sidebar-background: 220 20% 6%;
+  --sidebar-foreground: 180 10% 85%;
+  --sidebar-primary: 180 100% 45%;
+  --sidebar-primary-foreground: 220 20% 4%;
+  --sidebar-accent: 220 15% 12%;
+  --sidebar-accent-foreground: 180 10% 85%;
+  --sidebar-border: 220 15% 16%;
+  --sidebar-ring: 180 100% 45%;
+}
+
+/* ===================================================================== */
+/* Enterprise Mode — light surface, violet primary, no neon              */
+/* ===================================================================== */
+.enterprise,
+.light.enterprise {
+  /* Surface */
+  --background: 214 27% 97%;            /* fgn.cloud #F6F8FB */
+  --foreground: 216 28% 6%;             /* fgn.ink for body text */
+  --card: 0 0% 100%;
+  --card-foreground: 216 28% 6%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 216 28% 6%;
+  --surface-glass: 0 0% 100%;
+
+  /* Brand semantic — Enterprise: violet primary, cyan secondary */
+  --brand-primary: 262 83% 58%;         /* perf */
+  --brand-secondary: 180 100% 42%;      /* play */
+
+  /* shadcn semantic */
+  --primary: 262 83% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 15% 96%;
+  --secondary-foreground: 216 28% 6%;
+  --accent: 180 100% 42%;
+  --accent-foreground: 216 28% 6%;
+  --muted: 220 15% 94%;
+  --muted-foreground: 215 16% 47%;
+
+  /* System */
+  --border: 220 15% 90%;
+  --input: 220 15% 90%;
+  --ring: 262 83% 58%;
+
+  /* Effects — elevation, no neon */
+  --neon-glow: 262 83% 58%;
+  --neon-accent: 180 100% 42%;
+  --shadow-glow-soft: none;
+  --shadow-glow-cta: none;
+  --shadow-elevation-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-elevation-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-elevation-lg: 0 12px 32px rgba(15, 23, 42, 0.10);
+
+  /* Sidebar — light variant */
+  --sidebar-background: 0 0% 100%;
+  --sidebar-foreground: 216 28% 6%;
+  --sidebar-primary: 262 83% 58%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 220 15% 96%;
+  --sidebar-accent-foreground: 216 28% 6%;
+  --sidebar-border: 220 15% 90%;
+  --sidebar-ring: 262 83% 58%;
+}
+
+/* ===================================================================== */
+/* Base resets and typography defaults                                    */
+/* ===================================================================== */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, Segoe UI, sans-serif;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/* Arcade mode uses Orbitron + Rajdhani for display/heading.
+   Enterprise mode uses Inter throughout — overrides below. */
+:root h1, :root h2,
+.dark h1, .dark h2 {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+:root h3, :root h4,
+.dark h3, .dark h4 {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+}
+
+.enterprise h1,
+.enterprise h2,
+.enterprise h3,
+.enterprise h4 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Focus ring uses --ring (cyan in Arcade, violet in Enterprise). */
+*:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}

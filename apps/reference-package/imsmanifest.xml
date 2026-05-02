@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="fgn.cs-fiber.trench-excavation" version="1.0"
+          xmlns="http://www.imsproject.org/xsd/imscp_rootv1p1p2"
+          xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"
+          xmlns:imsmd="http://www.imsglobal.org/xsd/imsmd_rootv1p2p1"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://www.imsproject.org/xsd/imscp_rootv1p1p2 imscp_rootv1p1p2.xsd
+                              http://www.imsglobal.org/xsd/imsmd_rootv1p2p1 imsmd_rootv1p2p1.xsd
+                              http://www.adlnet.org/xsd/adlcp_rootv1p2 adlcp_rootv1p2.xsd">
+
+  <metadata>
+    <schema>ADL SCORM</schema>
+    <schemaversion>1.2</schemaversion>
+    <imsmd:lom>
+      <imsmd:general>
+        <imsmd:identifier>fgn.cs-fiber.trench-excavation</imsmd:identifier>
+        <imsmd:title>
+          <imsmd:langstring xml:lang="en-US">CS Fiber: Underground Utility Trench Excavation</imsmd:langstring>
+        </imsmd:title>
+        <imsmd:description>
+          <imsmd:langstring xml:lang="en-US">TIRAP UUIT credential pathway. Demonstrates safe trench excavation, locate-and-protect of existing utilities, and OSHA-compliant evidence capture using Construction Simulator and the FGN annotation model.</imsmd:langstring>
+        </imsmd:description>
+        <imsmd:keyword>
+          <imsmd:langstring xml:lang="en-US">TIRAP</imsmd:langstring>
+        </imsmd:keyword>
+        <imsmd:keyword>
+          <imsmd:langstring xml:lang="en-US">fiber</imsmd:langstring>
+        </imsmd:keyword>
+        <imsmd:keyword>
+          <imsmd:langstring xml:lang="en-US">underground utility</imsmd:langstring>
+        </imsmd:keyword>
+      </imsmd:general>
+      <imsmd:lifecycle>
+        <imsmd:version>
+          <imsmd:langstring xml:lang="en-US">1.0</imsmd:langstring>
+        </imsmd:version>
+        <imsmd:status>
+          <imsmd:source>
+            <imsmd:langstring xml:lang="x-none">LOMv1.0</imsmd:langstring>
+          </imsmd:source>
+          <imsmd:value>
+            <imsmd:langstring xml:lang="x-none">final</imsmd:langstring>
+          </imsmd:value>
+        </imsmd:status>
+      </imsmd:lifecycle>
+      <imsmd:technical>
+        <imsmd:format>text/html</imsmd:format>
+      </imsmd:technical>
+      <imsmd:educational>
+        <imsmd:typicallearningtime>
+          <imsmd:datetime>PT45M</imsmd:datetime>
+        </imsmd:typicallearningtime>
+      </imsmd:educational>
+    </imsmd:lom>
+  </metadata>
+
+  <organizations default="ORG-FGN">
+    <organization identifier="ORG-FGN">
+      <title>CS Fiber: Underground Utility Trench Excavation</title>
+      <item identifier="ITEM-MAIN" identifierref="RES-MAIN">
+        <title>CS Fiber: Underground Utility Trench Excavation</title>
+        <adlcp:masteryscore>80</adlcp:masteryscore>
+      </item>
+    </organization>
+  </organizations>
+
+  <resources>
+    <resource identifier="RES-MAIN" type="webcontent" adlcp:scormtype="sco" href="index.html">
+      <file href="index.html"/>
+      <file href="course.json"/>
+      <file href="assets/logo-fgn-wordmark-white.svg"/>
+      <file href="assets/logo-fgn-wordmark-ink.svg"/>
+    </resource>
+  </resources>
+
+</manifest>

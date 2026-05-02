@@ -1,0 +1,28 @@
+{
+  "name": "@fgn/course-types",
+  "version": "0.1.0",
+  "description": "Shared TypeScript types for the FGN SCORM toolkit. Defines the CourseManifest contract consumed by @fgn/scorm-player and produced by @fgn/scorm-builder + @fgn/academy-publisher.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fgn/brand-tokens": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

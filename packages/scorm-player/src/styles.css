@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  /* RichText prose overrides — keep on-brand inside dangerouslySetInnerHTML content. */
+  .prose h1, .prose h2 {
+    @apply font-display font-bold;
+  }
+  .prose h3, .prose h4 {
+    @apply font-heading font-semibold;
+  }
+  .prose p, .prose li {
+    @apply text-foreground/90;
+  }
+  .prose strong {
+    @apply text-foreground;
+  }
+  .prose code {
+    @apply rounded bg-muted px-1.5 py-0.5 font-mono text-sm text-brand-primary;
+  }
+  .prose blockquote {
+    @apply border-l-4 border-brand-primary/50 pl-4 italic text-muted-foreground;
+  }
+  .prose img {
+    @apply rounded-card border border-border;
+  }
+}
+
+/* Enterprise mode: drop neon glows entirely on focus and shadows. */
+.enterprise *:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}

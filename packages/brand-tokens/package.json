@@ -1,0 +1,39 @@
+{
+  "name": "@fgn/brand-tokens",
+  "version": "0.1.0",
+  "description": "FGN design tokens, Arcade/Enterprise modes, Tailwind preset, and brand assets. Single source of truth for the FGN visual identity inside SCORM packages.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tailwind-preset": {
+      "types": "./dist/tailwind-preset.d.ts",
+      "import": "./dist/tailwind-preset.js"
+    },
+    "./tokens.css": "./src/tokens.css",
+    "./assets/*": "./assets/*"
+  },
+  "files": [
+    "dist",
+    "src/tokens.css",
+    "assets"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "tailwindcss": ">=3.4.0"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4"
+  }
+}

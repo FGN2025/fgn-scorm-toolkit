@@ -1,0 +1,16 @@
+{
+  "name": "@fgn/reference-package",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hand-built SCORM 1.2 reference package wrapping the CS Fiber: Underground Utility Trench Excavation challenge. Validates the Player + manifest pipeline end-to-end.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "validate": "echo 'Upload dist/fgn-cs-fiber-trench.zip to https://cloud.scorm.com/sc/guest/SignInForm to validate.'"
+  },
+  "devDependencies": {
+    "@fgn/scorm-builder": "workspace:*",
+    "@fgn/scorm-player": "workspace:*"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "@fgn/scorm-player",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React runtime that ships inside every FGN SCORM package. Single bundle, parameterised by course.json at the package root.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "predev": "node ./scripts/copy-brand-assets.mjs",
+    "dev": "vite",
+    "prebuild": "node ./scripts/copy-brand-assets.mjs",
+    "build": "tsc -b --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@fgn/brand-tokens": "workspace:*",
+    "@fgn/course-types": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vite-plugin-singlefile": "^2.0.2"
+  }
+}

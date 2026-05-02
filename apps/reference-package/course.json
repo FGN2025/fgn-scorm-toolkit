@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "id": "fgn.cs-fiber.trench-excavation",
+  "title": "CS Fiber: Underground Utility Trench Excavation",
+  "description": "TIRAP UUIT credential pathway. Practice safe trench excavation, locate-and-protect of existing utilities, and OSHA-compliant evidence capture using Construction Simulator and the FGN annotation model.",
+  "destination": "broadbandworkforce",
+  "brandMode": "enterprise",
+  "pillar": "fiber",
+  "credentialFramework": "TIRAP",
+  "scormVersion": "1.2",
+  "launchTokenEndpoint": "https://play.fgn.gg/api/scorm-launch",
+  "modules": [
+    {
+      "id": "m1",
+      "position": 0,
+      "type": "briefing",
+      "title": "Why this matters",
+      "html": "<p>Underground utility trench work is one of the four leading causes of construction fatalities. The TIRAP Underground Utility Installer Technician credential certifies that you can identify hazards, locate existing utilities, and protect them during excavation.</p><p>This course pairs a Construction Simulator scenario with annotation evidence. You'll dig a fiber trench while documenting the OSHA standards that apply to your work in the real field.</p><h3>Standards covered</h3><ul><li>OSHA 1926 Subpart P — Excavations</li><li>OSHA 1926.651 — Specific excavation requirements</li><li>Common ground utility damage prevention practices</li></ul>"
+    },
+    {
+      "id": "m2",
+      "position": 1,
+      "type": "briefing",
+      "title": "Locate and protect",
+      "html": "<p>Before any excavation begins, existing utilities must be located. Call before you dig. The five common categories you'll encounter:</p><ul><li><strong>Gas</strong> — yellow flag, highest priority</li><li><strong>Electric</strong> — red flag, do not strike</li><li><strong>Water</strong> — blue flag, leak risk</li><li><strong>Sewer</strong> — green flag, contamination risk</li><li><strong>Comm / fiber</strong> — orange flag, often the line you're installing</li></ul><p>In the next challenge you'll be placed at a CS job site where two of these are present in the trench path. Your job: identify which, document them, and excavate without strike.</p>"
+    },
+    {
+      "id": "m3",
+      "position": 2,
+      "type": "challenge",
+      "title": "Excavate the trench",
+      "challengeId": "00000000-0000-0000-0000-000000000001",
+      "challengeUrl": "https://play.fgn.gg/c/cs-fiber-trench-excavation",
+      "game": "Construction_Sim",
+      "credentialFramework": "TIRAP",
+      "preLaunchHtml": "<p>Launch this challenge in Construction Simulator. Work through the tasks below in order, capture the specified evidence, and submit on play.fgn.gg. Return here when your submission is in.</p>",
+      "tasks": [
+        {
+          "id": "t1",
+          "position": 0,
+          "title": "Locate and flag existing utilities",
+          "description": "Walk the planned trench path before excavation begins. Use the in-game utility locator to identify any underground services that cross your dig line. Flag each one according to APWA color conventions and photograph the marked path. Note the depth and type of each utility discovered.",
+          "evidenceSpec": "Screenshot showing the flagged trench path with all utility locates visible and a written annotation listing each utility found, its color, and its approximate depth.",
+          "mechanicType": "in-game"
+        },
+        {
+          "id": "t2",
+          "position": 1,
+          "title": "Hand-dig the tolerance zone around marked lines",
+          "description": "Where any marked utility crosses your trench, machine excavation must stop. Switch to hand tools and excavate within 24 inches of the locate until the utility is positively exposed. Do not resume machine work in this section until the line is visible and protected.",
+          "evidenceSpec": "Video clip showing the transition from machine to hand-dig at a marked utility crossing, plus a written annotation citing the OSHA 1926 standard that requires it.",
+          "mechanicType": "in-game"
+        },
+        {
+          "id": "t3",
+          "position": 2,
+          "title": "Apply OSHA 1926 Subpart P protective system",
+          "description": "Once the trench reaches 5 feet deep, a protective system is required. Choose one of: sloping the trench walls back to the angle of repose for the soil type on site, installing trench shoring, or placing a trench shield. Document your choice and why it fits the soil conditions.",
+          "evidenceSpec": "Screenshot of the protective system in place plus a written annotation naming the system, the soil classification you assumed, and the reasoning. Cite OSHA 1926 Subpart P or the equivalent standard.",
+          "mechanicType": "annotation"
+        },
+        {
+          "id": "t4",
+          "position": 3,
+          "title": "Set spoil pile and means of egress",
+          "description": "Place excavated soil at least 2 feet from the trench edge. For any trench 4 feet or deeper, ensure a ladder, ramp, or other means of egress is within 25 feet of every worker who would enter the trench. Capture both compliance points before submitting.",
+          "evidenceSpec": "Wide screenshot showing the spoil pile setback and the means of egress in place. Annotate with measurements and the OSHA 1926.651 reasoning behind each.",
+          "mechanicType": "in-game"
+        }
+      ]
+    },
+    {
+      "id": "m4",
+      "position": 3,
+      "type": "quiz",
+      "title": "Knowledge gate",
+      "passThreshold": 80,
+      "questions": [
+        {
+          "id": "q1",
+          "type": "single-choice",
+          "prompt": "You're trenching a fiber line. The utility locate flagged a yellow line crossing your path at 30 inches deep. Your excavator bucket is 24 inches wide. What's the correct action?",
+          "choices": [
+            { "id": "a", "label": "Excavate at full speed — the line is below bucket depth", "correct": false },
+            { "id": "b", "label": "Hand-dig within 24 inches of the marked line until the gas line is exposed", "correct": true },
+            { "id": "c", "label": "Cut around the line and continue with the machine", "correct": false },
+            { "id": "d", "label": "Lower bucket pressure and machine-dig over the line slowly", "correct": false }
+          ],
+          "explanation": "OSHA 1926.651 and standard utility damage prevention practice: when a marked utility is within the dig zone, use hand tools or vacuum excavation within the tolerance zone until the line is positively exposed."
+        },
+        {
+          "id": "q2",
+          "type": "single-choice",
+          "prompt": "At what trench depth does OSHA 1926 Subpart P require a protective system (sloping, shoring, or shielding)?",
+          "choices": [
+            { "id": "a", "label": "3 feet", "correct": false },
+            { "id": "b", "label": "5 feet", "correct": true },
+            { "id": "c", "label": "8 feet", "correct": false },
+            { "id": "d", "label": "Any depth where a worker enters", "correct": false }
+          ],
+          "explanation": "OSHA 1926.652(a)(1) — protective systems are required for trenches 5 feet deep or greater, unless the excavation is in stable rock."
+        },
+        {
+          "id": "q3",
+          "type": "multi-choice",
+          "prompt": "Which of the following are required before any worker enters a trench? (Select all that apply.)",
+          "choices": [
+            { "id": "a", "label": "Daily inspection by a competent person", "correct": true },
+            { "id": "b", "label": "Spoil pile placed at least 2 feet from trench edge", "correct": true },
+            { "id": "c", "label": "Stop sign posted at site entrance", "correct": false },
+            { "id": "d", "label": "Means of egress (ladder/ramp) within 25 feet of any worker in trenches 4+ feet deep", "correct": true }
+          ],
+          "explanation": "OSHA 1926.651 requires daily competent-person inspection, 2-foot spoil setback, and 25-foot egress reach. Site entrance signage is not part of Subpart P."
+        },
+        {
+          "id": "q4",
+          "type": "single-choice",
+          "prompt": "Your evidence annotation should describe which standard you followed and why. What's the strongest evidence statement?",
+          "choices": [
+            { "id": "a", "label": "I dug a trench safely.", "correct": false },
+            { "id": "b", "label": "I followed OSHA rules.", "correct": false },
+            { "id": "c", "label": "I hand-dug within 24 inches of the yellow gas locate per OSHA 1926.651, then resumed machine excavation once the line was positively exposed and protected with a barrier.", "correct": true },
+            { "id": "d", "label": "I knew the gas line was there from the locate.", "correct": false }
+          ],
+          "explanation": "Strong evidence ties a specific action to a specific standard with the reasoning that connects them. This is the annotation model in practice."
+        },
+        {
+          "id": "q5",
+          "type": "true-false",
+          "prompt": "Cave-in is the leading cause of trench fatalities.",
+          "choices": [
+            { "id": "t", "label": "True", "correct": true },
+            { "id": "f", "label": "False", "correct": false }
+          ],
+          "explanation": "Cave-in accounts for the majority of trench fatalities — a cubic yard of soil weighs ~3,000 lb. Protective systems exist specifically to prevent this."
+        }
+      ]
+    },
+    {
+      "id": "m5",
+      "position": 4,
+      "type": "completion",
+      "title": "Course complete",
+      "html": "<p>You've completed the FGN trench excavation course. A preliminary score has been written to your LMS based on your knowledge-gate quiz.</p><p>Your TIRAP UUIT progress will update once your evidence has been reviewed by an FGN instructor — usually within 1-2 business days. The final rubric score will replace the preliminary score in your transcript automatically.</p><h3>What's next</h3><p>Continue to the next module in your TIRAP pathway, or browse other CS Fiber challenges on fgn.academy.</p>"
+    }
+  ]
+}
