@@ -31,5 +31,12 @@ packages/scorm-player/public/assets/
 # Reproducible by re-running the CLI; not source.
 acceptance/
 
+# Local @fgn/course-enhancer disk cache (Phase 1.4). Re-populated by
+# re-running `fgn-scorm enhance --cache-dir ...`; not source.
+.enhancer-cache/
+
+# Diagnostic captures from local typecheck runs.
+typecheck-errors.txt
+
 # TypeScript incremental build cache.
 *.tsbuildinfo

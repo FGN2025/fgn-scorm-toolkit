@@ -29,6 +29,7 @@
   "dependencies": {
     "@fgn/academy-publisher": "workspace:*",
     "@fgn/brand-tokens": "workspace:*",
+    "@fgn/course-enhancer": "workspace:*",
     "@fgn/course-types": "workspace:*",
     "jszip": "^3.10.1"
   },

@@ -32,6 +32,20 @@
  *     --difficulty <level>          beginner | intermediate | advanced (default intermediate)
  *     env: FGN_ACADEMY_APP_KEY (required)
  *     Native fgn.academy publish via the scorm-publish edge function.
+ *
+ *   fgn-scorm enhance <course.json>
+ *     --out <path>                  default: overwrite input
+ *     --slots <list>                comma-separated subset of
+ *                                   description,briefingHtml,quizQuestions
+ *                                   (default: all three)
+ *     --cache-dir <path>            optional disk cache for repeated runs
+ *     --model <id>                  default: claude-opus-4-7
+ *     --effort <low|medium|high|xhigh|max>  default: API default (high)
+ *     --dry-run                     skip API call; emit a warning only
+ *     env: ANTHROPIC_API_KEY (required unless --dry-run)
+ *     AI rewrite of course description, briefing HTML, and quiz
+ *     questions via @fgn/course-enhancer. Additive — failures keep
+ *     the template-derived content.
  */
 
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -41,6 +55,11 @@ import { transform, type TransformInput } from './transform.js';
 import { packageCourse } from './pack.js';
 import { createSupabaseFetcher, type SupabaseLike } from './fetcher.js';
 import { publishCourse, PublishError } from '@fgn/academy-publisher';
+import {
+  enhanceCourse,
+  type EnhancedField,
+  type EffortLevel,
+} from '@fgn/course-enhancer';
 import type { ScormDestination } from '@fgn/brand-tokens';
 import type { CourseManifest, CourseWarning } from '@fgn/course-types';
 
@@ -279,6 +298,68 @@ async function cmdPublish(args: Args): Promise<void> {
   }
 }
 
+async function cmdEnhance(args: Args): Promise<void> {
+  const courseJsonPath = args.positional[0];
+  if (!courseJsonPath) {
+    console.error('Usage: fgn-scorm enhance <course.json> [--out PATH] [--slots a,b,c] [--cache-dir DIR] [--model ID] [--effort LEVEL] [--dry-run]');
+    process.exit(2);
+  }
+  const dryRun = args.flags['dry-run'] === 'true';
+  const out = args.flags.out ?? courseJsonPath;
+  const cacheDir = args.flags['cache-dir'];
+  const model = args.flags.model;
+  const effort = args.flags.effort as EffortLevel | undefined;
+  const slotList = args.flags.slots;
+  const slots: EnhancedField[] | undefined = slotList
+    ? slotList
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s): s is EnhancedField =>
+          s === 'description' || s === 'briefingHtml' || s === 'quizQuestions',
+        )
+    : undefined;
+
+  if (!dryRun && !process.env.ANTHROPIC_API_KEY) {
+    console.error('ANTHROPIC_API_KEY env var is required unless --dry-run is set.');
+    process.exit(2);
+  }
+
+  const course = JSON.parse(readFileSync(courseJsonPath, 'utf8')) as CourseManifest;
+
+  console.log(`Enhancing "${course.title}" (${course.modules.length} modules)…`);
+  if (dryRun) console.log('  [dry-run: skipping API calls]');
+
+  const result = await enhanceCourse(course, {
+    enabled: !dryRun,
+    ...(slots !== undefined ? { slots } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    cache: {
+      ...(cacheDir !== undefined ? { persistDir: cacheDir } : {}),
+    },
+  });
+
+  ensureDir(out);
+  writeFileSync(out, JSON.stringify(result.course, null, 2), 'utf8');
+  console.log(`\n✓ Wrote ${out}`);
+
+  console.log('\nSlot stats:');
+  for (const [name, stat] of Object.entries(result.stats)) {
+    console.log(
+      `  ${name.padEnd(16)} attempted=${stat.attempted} ok=${stat.succeeded} cached=${stat.cached} failed=${stat.failed}`,
+    );
+  }
+  if (result.course.aiEnhanced) {
+    console.log(
+      `\nStamped aiEnhanced: model=${result.course.aiEnhanced.model} fields=[${result.course.aiEnhanced.enhancedFields.join(', ')}]`,
+    );
+  }
+  logWarnings(result.warnings);
+
+  const hasError = result.warnings.some((w) => w.level === 'error');
+  if (hasError) process.exit(1);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
   switch (args.command) {
@@ -294,6 +375,9 @@ async function main(): Promise<void> {
     case 'publish':
       await cmdPublish(args);
       break;
+    case 'enhance':
+      await cmdEnhance(args);
+      break;
     case '':
     case 'help':
     case '--help':
@@ -307,6 +391,9 @@ Commands:
   publish <course.json>        Publish a course.json to fgn.academy native rows
                                via the scorm-publish edge function (no service
                                role key required client-side)
+  enhance <course.json>        AI-rewrite course description, briefing HTML,
+                               and quiz questions via @fgn/course-enhancer.
+                               Requires ANTHROPIC_API_KEY (unless --dry-run).
 
 See \`fgn-scorm <command> --help\` for command flags.`);
       break;

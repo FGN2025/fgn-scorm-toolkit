@@ -61,6 +61,37 @@ export interface CourseManifest {
    * absent only for hand-authored courses with no work_order prerequisite.
    */
   gatingChallengeId?: string;
+  /**
+   * Marker stamped by @fgn/course-enhancer when an AI pass has rewritten
+   * one or more text fields on this manifest. Carries the model id and
+   * a hash of the input course used to generate the cache keys, so
+   * downstream consumers can re-run idempotently and reviewers can tell
+   * at a glance whether content has been LLM-touched.
+   *
+   * Absence (undefined) means the manifest is fully template-derived —
+   * the default for transform() output.
+   */
+  aiEnhanced?: {
+    /** Anthropic model id used for the enhancement pass. */
+    model: string;
+    /** ISO timestamp of when the enhancement ran. */
+    enhancedAt: string;
+    /**
+     * sha256 of the canonicalized pre-enhancement manifest, hex-encoded.
+     * Lets us detect "this course was enhanced from THIS exact input" even
+     * after later edits.
+     */
+    inputHash: string;
+    /** Which fields were rewritten — useful for partial-failure recovery. */
+    enhancedFields: Array<'description' | 'briefingHtml' | 'quizQuestions'>;
+  };
+  /**
+   * Optional cover/thumbnail URLs. Reserved for Phase 1.4.5 (image
+   * generation) — present in the type so consumers can adopt the field
+   * now without a future schema bump. Absent on all v0 enhancer output.
+   */
+  coverImageUrl?: string;
+  thumbnailUrl?: string;
   modules: CourseModule[];
 }
 
