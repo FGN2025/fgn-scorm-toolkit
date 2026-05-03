@@ -172,6 +172,16 @@ export function buildCourseManifest(
   // the first; Phase 2 Course Builder UI will expose richer logic.
   const gatingChallengeId = challenges[0]?.challenge.id;
 
+  // Phase 1.4.5.1 — pass through the existing play.fgn.gg cover image
+  // and per-challenge AI prompt as override-time direction. For
+  // single-challenge courses we trust the lead challenge's row; for
+  // multi-challenge bundles we still use the lead challenge's cover
+  // (Phase 2 Course Builder UI will expose admin selection between
+  // bundle members or full manual override).
+  const leadChallenge = challenges[0];
+  const coverImageRemoteUrl = leadChallenge?.challenge.cover_image_url ?? undefined;
+  const coverImagePromptOverride = leadChallenge?.challenge.cover_image_prompt ?? undefined;
+
   const manifest: CourseManifest = {
     schemaVersion: 1,
     id: options.bundleId,
@@ -189,6 +199,12 @@ export function buildCourseManifest(
       ? { bridgeEndpoint: options.bridgeEndpoint }
       : {}),
     ...(gatingChallengeId !== undefined ? { gatingChallengeId } : {}),
+    // Note: coverImageUrl (the relative path inside the SCORM ZIP)
+    // is intentionally NOT stamped here. transform() fetches the
+    // bytes and stamps it after the asset is bundled. Builder is a
+    // pure-data step; HTTP fetching is transform()'s job.
+    ...(coverImageRemoteUrl !== undefined ? { coverImageRemoteUrl } : {}),
+    ...(coverImagePromptOverride !== undefined ? { coverImagePromptOverride } : {}),
     modules,
   };
 

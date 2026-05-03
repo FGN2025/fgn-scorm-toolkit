@@ -25,6 +25,18 @@ export interface PlayChallenge {
   academy_next_step_label: string | null;
   academy_next_step_url: string | null;
   cover_image_url: string | null;
+  /**
+   * Hand-curated AI image prompt that the FGN content team writes per
+   * challenge. Used as the override prompt source when the admin
+   * regenerates a SCORM course's cover via `fgn-scorm enhance
+   * --slots coverImage`. When absent, the toolkit falls back to its
+   * per-game scene library.
+   *
+   * Note: `cover_image_url` is the DEFAULT cover for SCORM courses.
+   * `cover_image_prompt` is the override-time direction. Both can
+   * coexist on a row (commonly do).
+   */
+  cover_image_prompt: string | null;
   coach_context: string | null;
   achievement_id: string | null;
   season_id: string | null;

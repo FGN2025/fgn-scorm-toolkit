@@ -228,12 +228,28 @@ async function cmdTransform(args: Args): Promise<void> {
   };
 
   console.log(`Transforming ${challengeIds.length} challenge${challengeIds.length === 1 ? '' : 's'} for ${destination}…`);
-  const { course, warnings } = await transform(input, fetcher);
+  const { course, warnings, assets } = await transform(input, fetcher);
 
   ensureDir(out);
   writeFileSync(out, JSON.stringify(course, null, 2), 'utf8');
   console.log(`\n✓ Wrote ${out}`);
   console.log(`  ${course.modules.length} modules · brandMode=${course.brandMode} · scorm=${course.scormVersion}`);
+
+  // Phase 1.4.5.1 — write any binary assets (cover image passthrough,
+  // future thumbnails, etc.) to disk next to course.json. The
+  // packager later picks them up by following relative URLs in the
+  // manifest.
+  for (const asset of assets) {
+    const assetOut = resolve(dirname(out), asset.path);
+    ensureDir(assetOut);
+    writeFileSync(assetOut, asset.bytes);
+    console.log(`✓ Wrote ${assetOut} (${asset.bytes.byteLength} bytes, ${asset.mimeType})`);
+  }
+  if (course.coverImageUrl) {
+    console.log(`Cover image (default): ${course.coverImageUrl}` + (course.coverImageRemoteUrl ? ` ← ${course.coverImageRemoteUrl}` : ''));
+  } else if (course.coverImageRemoteUrl) {
+    console.log(`Cover image (remote-only): ${course.coverImageRemoteUrl}`);
+  }
   logWarnings(warnings);
 
   const hasError = warnings.some((w) => w.level === 'error');
@@ -298,7 +314,7 @@ async function cmdExport(args: Args): Promise<void> {
   const fetcher = createSupabaseFetcher(supabase);
 
   console.log(`Transforming ${challengeIds.length} challenge${challengeIds.length === 1 ? '' : 's'}…`);
-  const { course, warnings } = await transform(
+  const { course, warnings, assets } = await transform(
     {
       challengeIds,
       destination,
@@ -318,15 +334,27 @@ async function cmdExport(args: Args): Promise<void> {
   const playerHtml = readFileSync(playerPath, 'utf8');
   const whiteSvg = readFileSync(whiteSvgPath, 'utf8');
   const inkSvg = readFileSync(inkSvgPath, 'utf8');
+
+  // Phase 1.4.5.1 — pass transform-returned assets straight through to
+  // the packager as media. cmdExport is a one-shot path that doesn't
+  // touch disk between transform and package, so we route bytes
+  // in-memory rather than via the assets/ directory the way cmdPackage
+  // does.
+  const exportMedia = assets.map((a) => ({ path: a.path, content: a.bytes }));
+
   const result = await packageCourse({
     course,
     playerHtml,
     brandAssets: { whiteSvg, inkSvg },
+    media: exportMedia,
   });
 
   ensureDir(out);
   writeFileSync(out, result.zip);
   console.log(`\n✓ Wrote ${out} (${result.zip.byteLength} bytes, ${result.files.length} files)`);
+  if (course.coverImageUrl) {
+    console.log(`Cover image bundled: ${course.coverImageUrl}` + (course.coverImageRemoteUrl ? ` ← ${course.coverImageRemoteUrl}` : ''));
+  }
   console.log(`\nValidate at https://cloud.scorm.com/sc/guest/SignInForm`);
 }
 

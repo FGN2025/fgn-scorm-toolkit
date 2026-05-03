@@ -35,9 +35,32 @@ export interface TransformInput {
   knowledgeGateFrameworks?: string[];
 }
 
+/**
+ * Binary asset to be written alongside the manifest. The CLI writes
+ * each `path` (relative to the manifest's directory) and the SCORM
+ * packager later picks them up by following relative URLs in the
+ * manifest. Phase 1.4.5.1 introduces this for cover-image passthrough;
+ * future asset types (thumbnails, media clips) can use the same shape.
+ */
+export interface TransformAsset {
+  /** Relative path, e.g. "assets/cover.png". */
+  path: string;
+  /** Raw bytes. */
+  bytes: Uint8Array;
+  /** Mime type, e.g. "image/png". */
+  mimeType: string;
+}
+
 export interface TransformResult {
   course: CourseManifest;
   warnings: CourseWarning[];
+  /**
+   * Binary assets the transformer fetched from external sources
+   * (currently: existing cover_image_url on the lead challenge).
+   * Empty when no assets need to be bundled. The CLI writes each
+   * to disk relative to the manifest output path.
+   */
+  assets: TransformAsset[];
 }
 
 export async function transform(
@@ -79,7 +102,92 @@ export async function transform(
       : {}),
   });
 
-  return { course, warnings };
+  // Phase 1.4.5.1 — default cover passthrough.
+  // If the lead challenge has a cover_image_url on play.fgn.gg, fetch
+  // the bytes and stamp the manifest's coverImageUrl as a relative
+  // ZIP path. The CLI writes the bytes to that path on disk; the
+  // packager bundles them into the SCORM ZIP. Failure is non-fatal —
+  // the course just ships without a cover, with a warning.
+  const assets: TransformAsset[] = [];
+  if (course.coverImageRemoteUrl) {
+    try {
+      const fetched = await fetchCoverImage(course.coverImageRemoteUrl);
+      // Derive the on-disk extension from the actual mime type so a
+      // JPEG byte-stream doesn't get a misleading .png name. Matters
+      // for strict SCORM importers and for code-review cleanliness.
+      const ext = extensionForMime(fetched.mimeType);
+      const assetPath = `assets/cover.${ext}`;
+      assets.push({
+        path: assetPath,
+        bytes: fetched.bytes,
+        mimeType: fetched.mimeType,
+      });
+      // Mutate the manifest to point at the bundled relative path.
+      course.coverImageUrl = assetPath;
+    } catch (err) {
+      warnings.push({
+        level: 'warn',
+        code: 'COVER_IMAGE_FETCH_FAILED',
+        message: `Failed to fetch existing cover image from ${course.coverImageRemoteUrl}: ${err instanceof Error ? err.message : String(err)}. Course will ship without an embedded cover; coverImageRemoteUrl is preserved on the manifest.`,
+      });
+    }
+  }
+
+  return { course, warnings, assets };
+}
+
+/**
+ * Pull the bytes for a play.fgn.gg cover image. Public Supabase
+ * Storage URL — no auth required. Returns Uint8Array for parity with
+ * the rest of the asset pipeline (PackageMedia, EnhanceAsset).
+ */
+async function fetchCoverImage(
+  url: string,
+): Promise<{ bytes: Uint8Array; mimeType: string }> {
+  const res = await fetch(url, {
+    // No-cache to avoid stale CDN responses if the team updates the
+    // image upstream during a single transform session.
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  }
+  const mimeType = res.headers.get('content-type') ?? inferMimeFromUrl(url);
+  const ab = await res.arrayBuffer();
+  return { bytes: new Uint8Array(ab), mimeType };
+}
+
+function inferMimeFromUrl(url: string): string {
+  const lower = url.toLowerCase().split('?')[0]!;
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.jfif')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  // Default — most of FGN's storage holds JPEGs/PNGs.
+  return 'application/octet-stream';
+}
+
+/**
+ * Map a mime type to the file extension we use on disk. Keep the set
+ * narrow — these are the only formats sane SCORM importers support
+ * for course icons / cover art.
+ */
+function extensionForMime(mimeType: string): string {
+  switch (mimeType) {
+    case 'image/png':
+      return 'png';
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      // Fall back to .png — extension-mismatched bytes still work for
+      // most consumers via magic-byte sniffing, and we won't hit this
+      // path under normal play.fgn.gg storage.
+      return 'png';
+  }
 }
 
 function emitQuizPlaceholderWarnings(

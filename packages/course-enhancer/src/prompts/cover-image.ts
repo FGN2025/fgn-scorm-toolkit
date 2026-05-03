@@ -83,7 +83,15 @@ export function buildCoverImagePrompt(
   course: CourseManifest,
   game: GameTitle | undefined,
 ): CoverImagePrompt {
-  const scene = game ? GAME_SCENES[game] : FALLBACK_SCENE;
+  // Phase 1.4.5.1 — if the manifest carries a per-challenge override
+  // (sourced from play.fgn.gg's `cover_image_prompt` field at transform
+  // time), use it as the SCENE description in place of the game-default
+  // scene. This lets the FGN content team curate per-challenge image
+  // direction without bypassing the brand framing — we still wrap the
+  // override scene in the FGN photoreal/people/composition/lighting/
+  // hard-constraints structure.
+  const scene = course.coverImagePromptOverride
+    ?? (game ? GAME_SCENES[game] : FALLBACK_SCENE);
   // Note: course.brandMode is intentionally NOT used to drive image
   // grading. Brand mode controls UI surface color (dark vs light) and
   // HTML chrome around the image — production FGN imagery uses natural

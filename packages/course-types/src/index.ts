@@ -114,8 +114,26 @@ export interface CourseManifest {
    * coverImageUrl, which may be a relative path inside the SCORM ZIP.
    * Both can coexist; consumers pick whichever fits their context
    * (admin UI prefers remote; offline SCORM player prefers local).
+   *
+   * Phase 1.4.5.1 also stamps this field with the original
+   * play.fgn.gg `cover_image_url` when the toolkit passes the
+   * existing curated cover through to the SCORM. That gives the
+   * catalog UI a stable reference to the source-of-truth image even
+   * after the bytes are bundled into the ZIP.
    */
   coverImageRemoteUrl?: string;
+  /**
+   * Hand-curated AI image prompt copied from play.fgn.gg's
+   * `challenges.cover_image_prompt` field at transform time. Used as
+   * the prompt source when the admin chooses to REGENERATE the cover
+   * via `fgn-scorm enhance --slots coverImage`. When absent, the
+   * enhancer falls back to its per-game scene library.
+   *
+   * The default flow does NOT use this field — the existing
+   * `coverImageUrl`/`coverImageRemoteUrl` is the default cover. This
+   * field only matters during AI-driven override regeneration.
+   */
+  coverImagePromptOverride?: string;
   modules: CourseModule[];
 }
 
