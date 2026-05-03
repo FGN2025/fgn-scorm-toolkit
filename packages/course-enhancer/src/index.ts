@@ -43,3 +43,6 @@ export type {
 
 export { EnhanceCache } from './cache.js';
 export type { EnhanceCacheOptions } from './cache.js';
+
+export { uploadCoverToAcademy, AcademyUploadError } from './academy-uploader.js';
+export type { UploadCoverOptions, UploadCoverResult } from './academy-uploader.js';

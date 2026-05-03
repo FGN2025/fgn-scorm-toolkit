@@ -43,11 +43,19 @@
  *                                   (text + binary; safe to delete)
  *     --model <id>                  default: claude-opus-4-7 (text)
  *     --effort <low|medium|high|xhigh|max>  default: API default (high)
+ *     --image-model <id>            default: gpt-image-2 (override:
+ *                                   gpt-image-1-mini for unverified orgs)
  *     --image-quality <low|medium|high>  default: medium (~$0.04/image on gpt-image-2)
  *     --image-size <1024x1024|1024x1536|1536x1024>  default: 1024x1024
+ *     --upload-to-academy           after generating a new cover, upload
+ *                                   bytes to fgn.academy media library and
+ *                                   stamp coverImageRemoteUrl. Only valid
+ *                                   with --slots coverImage. Requires
+ *                                   FGN_ACADEMY_APP_KEY.
  *     --dry-run                     skip API calls; emit a warning only
- *     env: ANTHROPIC_API_KEY  (required for text slots unless --dry-run)
- *          OPENAI_API_KEY     (required when --slots includes coverImage)
+ *     env: ANTHROPIC_API_KEY    (required for text slots unless --dry-run)
+ *          OPENAI_API_KEY       (required when --slots includes coverImage)
+ *          FGN_ACADEMY_APP_KEY  (required when --upload-to-academy is set)
  *     AI rewrite of course description, briefing HTML, quiz questions,
  *     and (opt-in) cover image via @fgn/course-enhancer. Additive —
  *     failures keep the template-derived content. Binary assets (cover
@@ -413,7 +421,7 @@ async function cmdEnhance(args: Args): Promise<void> {
   const courseJsonPath = args.positional[0];
   if (!courseJsonPath) {
     console.error(
-      'Usage: fgn-scorm enhance <course.json> [--out PATH] [--slots a,b,c] [--cache-dir DIR] [--model ID] [--effort LEVEL] [--image-quality LEVEL] [--image-size WxH] [--dry-run]',
+      'Usage: fgn-scorm enhance <course.json> [--out PATH] [--slots a,b,c] [--cache-dir DIR] [--model ID] [--effort LEVEL] [--image-model ID] [--image-quality LEVEL] [--image-size WxH] [--upload-to-academy] [--dry-run]',
     );
     process.exit(2);
   }
@@ -425,6 +433,7 @@ async function cmdEnhance(args: Args): Promise<void> {
   const imageQuality = args.flags['image-quality'] as ImageQuality | undefined;
   const imageSize = args.flags['image-size'] as ImageSize | undefined;
   const imageModel = args.flags['image-model'];
+  const uploadToAcademy = args.flags['upload-to-academy'] === 'true';
   const slotList = args.flags.slots;
   const slots: EnhancedField[] | undefined = slotList
     ? slotList
@@ -454,6 +463,16 @@ async function cmdEnhance(args: Args): Promise<void> {
     console.error('OPENAI_API_KEY env var is required when --slots includes coverImage.');
     process.exit(2);
   }
+  if (!dryRun && uploadToAcademy && !needsOpenAI) {
+    console.error(
+      '--upload-to-academy only applies when generating a new cover (--slots coverImage). The default-passthrough flow keeps the original play.fgn.gg cover URL on coverImageRemoteUrl already.',
+    );
+    process.exit(2);
+  }
+  if (!dryRun && uploadToAcademy && !process.env.FGN_ACADEMY_APP_KEY) {
+    console.error('FGN_ACADEMY_APP_KEY env var is required when --upload-to-academy is set.');
+    process.exit(2);
+  }
 
   const course = JSON.parse(readFileSync(courseJsonPath, 'utf8')) as CourseManifest;
 
@@ -468,6 +487,7 @@ async function cmdEnhance(args: Args): Promise<void> {
     ...(imageQuality !== undefined ? { imageQuality } : {}),
     ...(imageSize !== undefined ? { imageSize } : {}),
     ...(imageModel !== undefined ? { openai: { model: imageModel } } : {}),
+    ...(uploadToAcademy ? { uploadToAcademy: true } : {}),
     cache: {
       ...(cacheDir !== undefined ? { persistDir: cacheDir } : {}),
     },
@@ -500,6 +520,9 @@ async function cmdEnhance(args: Args): Promise<void> {
   }
   if (result.course.coverImageUrl) {
     console.log(`Cover image: ${result.course.coverImageUrl}`);
+  }
+  if (result.course.coverImageRemoteUrl) {
+    console.log(`Cover image (remote): ${result.course.coverImageRemoteUrl}`);
   }
   logWarnings(result.warnings);
 
@@ -542,9 +565,11 @@ Commands:
                                and quiz questions via @fgn/course-enhancer.
                                Opt-in --slots coverImage adds a generated
                                cover.png next to course.json (gpt-image-2).
+                               Add --upload-to-academy to also push the new
+                               cover to fgn.academy's media library.
                                Requires ANTHROPIC_API_KEY for text slots,
-                               OPENAI_API_KEY for the coverImage slot
-                               (unless --dry-run).
+                               OPENAI_API_KEY for the coverImage slot,
+                               FGN_ACADEMY_APP_KEY for upload (unless --dry-run).
 
 See \`fgn-scorm <command> --help\` for command flags.`);
       break;

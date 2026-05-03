@@ -4,7 +4,7 @@ Optional AI rewrite pass between `transform()` and `package()`. Takes a `CourseM
 
 ## Status
 
-**Phase 1.4.5 v0.** Text enhancement (description, briefing HTML, quiz questions) via Anthropic Claude — Phase 1.4 — plus opt-in cover image generation via OpenAI `gpt-image-2` — Phase 1.4.5. Server-side upload of generated covers to fgn.academy's media library is deferred to Phase 1.4.6.
+**Phase 1.4.6 v0.** Text enhancement (description, briefing HTML, quiz questions) via Anthropic Claude — Phase 1.4. Opt-in cover image generation via OpenAI `gpt-image-2` — Phase 1.4.5. Default cover passthrough from play.fgn.gg's `cover_image_url` — Phase 1.4.5.1. Optional server-side upload of AI-generated covers to fgn.academy's media library — Phase 1.4.6.
 
 ## Why this is its own package
 
@@ -111,6 +111,32 @@ fgn-scorm enhance ./course.json \
 ```
 
 Mini gives you a recognizable cinematic illustration at $0.005/image. Less rigid prompt adherence than `gpt-image-2` (we observed slight color-grade drift toward warm rim light vs strict arcade cyan), but production-acceptable.
+
+### CLI — cover image + upload to fgn.academy media library (Phase 1.4.6)
+
+When you regenerate a cover for a different endpoint context (e.g., broadbandworkforce.com vs fgn.academy generic), you usually want the new bytes hosted on fgn.academy's media library so the catalog/admin UI can reference a stable URL. Add `--upload-to-academy`:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-…
+export OPENAI_API_KEY=sk-…
+export FGN_ACADEMY_APP_KEY=<provisioned via provision_fgn_scorm_toolkit_app()>
+fgn-scorm enhance ./course.json \
+  --slots coverImage \
+  --image-quality medium \
+  --image-size 1536x1024 \
+  --upload-to-academy \
+  --cache-dir ./.enhancer-cache
+```
+
+The toolkit will:
+1. Generate the cover via OpenAI as usual
+2. Write `assets/cover.png` next to course.json (for SCORM ZIP bundling)
+3. POST the bytes to fgn.academy's `media-upload` edge function
+4. Stamp the returned public URL on `course.coverImageRemoteUrl`
+
+**Default-passthrough flow doesn't trigger upload.** When the toolkit uses an existing play.fgn.gg cover (Phase 1.4.5.1), `coverImageRemoteUrl` is already set to the original Supabase URL — no re-upload needed. `--upload-to-academy` only matters when you're generating new bytes that would otherwise have nowhere to live except inside the SCORM ZIP.
+
+Upload failure is non-fatal — the local `cover.png` still gets bundled into the SCORM ZIP. You'll see an `ENHANCER_UPLOAD_FAILED` warning and the manifest just won't have `coverImageRemoteUrl` stamped.
 
 `--dry-run` skips ALL APIs (text + image) and emits a single `ENHANCER_DISABLED` warning, useful for CI dry-runs that exercise the rest of the pipeline without spending tokens.
 
