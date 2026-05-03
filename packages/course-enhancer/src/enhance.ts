@@ -27,6 +27,7 @@ import type {
   ChallengeModule,
   CourseManifest,
   CourseWarning,
+  GameTitle,
   QuizModule,
 } from '@fgn/course-types';
 import {
@@ -34,15 +35,50 @@ import {
   type EnhanceClientOptions,
   type SystemBlock,
 } from './anthropic-client.js';
+import {
+  OpenAIImageClient,
+  type OpenAIClientOptions,
+  type ImageQuality,
+  type ImageSize,
+  DEFAULT_IMAGE_QUALITY,
+  DEFAULT_IMAGE_SIZE,
+} from './openai-client.js';
 import { EnhanceCache, type EnhanceCacheOptions } from './cache.js';
 import { buildDescriptionPrompt } from './prompts/description.js';
 import { buildBriefingPrompt } from './prompts/briefing.js';
 import { buildQuizPrompt } from './prompts/quiz.js';
+import { buildCoverImagePrompt } from './prompts/cover-image.js';
 
-export type EnhancedField = 'description' | 'briefingHtml' | 'quizQuestions';
+export type EnhancedField =
+  | 'description'
+  | 'briefingHtml'
+  | 'quizQuestions'
+  | 'coverImage';
+
+/**
+ * One generated binary asset that the enhancer wants the caller to
+ * write to disk alongside course.json. The path is relative to the
+ * directory that course.json lives in (e.g. "assets/cover.png").
+ *
+ * The CLI in @fgn/scorm-builder writes these to disk; the packager
+ * later reads them by following relative URLs in the manifest.
+ */
+export interface EnhanceAsset {
+  /** Relative path, e.g. "assets/cover.png". */
+  path: string;
+  /** Raw bytes ready to write. */
+  bytes: Buffer;
+  /** Mime type, e.g. "image/png". */
+  mimeType: string;
+}
 
 export interface EnhanceOptions extends EnhanceClientOptions {
-  /** Restrict the pass to a subset of slots. Default: all three. */
+  /**
+   * Restrict the pass to a subset of slots. Default: text-only
+   * (description, briefingHtml, quizQuestions). The 'coverImage' slot
+   * is OFF by default because it requires a separate API key and
+   * costs money — opt in explicitly via slots: [..., 'coverImage'].
+   */
   slots?: EnhancedField[];
   /** Cache configuration. Default: in-memory only. */
   cache?: EnhanceCacheOptions;
@@ -62,6 +98,26 @@ export interface EnhanceOptions extends EnhanceClientOptions {
    * here. Falls back to whatever's already in the briefing HTML.
    */
   challengeDescriptions?: Record<string, string>;
+
+  // -- Image-slot specific options ---------------------------------------
+  /** OpenAI client options. Only consulted when 'coverImage' is in slots. */
+  openai?: OpenAIClientOptions;
+  /**
+   * Source game for the briefing's cover image. The transformer maps
+   * play.fgn.gg game names to the canonical GameTitle enum; for
+   * hand-authored courses the caller can pass it through here.
+   */
+  game?: GameTitle;
+  /** Image quality tier. Default: medium (~$0.04/image on gpt-image-2). */
+  imageQuality?: ImageQuality;
+  /** Image output size. Default: 1024x1024 square. */
+  imageSize?: ImageSize;
+  /**
+   * Asset path used for the cover image in the manifest + on disk.
+   * Default: "assets/cover.png". Override only if you have a
+   * collision with another asset.
+   */
+  coverImageAssetPath?: string;
 }
 
 export interface EnhanceResult {
@@ -72,7 +128,16 @@ export interface EnhanceResult {
     description: SlotStat;
     briefingHtml: SlotStat;
     quizQuestions: SlotStat;
+    coverImage: SlotStat;
   };
+  /**
+   * Binary assets the enhancer produced (e.g. cover.png) that the
+   * caller should write to disk next to course.json. Empty for
+   * text-only runs. The CLI writes these via fs.writeFileSync; the
+   * packager later picks them up by following relative URLs in the
+   * manifest.
+   */
+  assets: EnhanceAsset[];
 }
 
 export interface SlotStat {
@@ -82,11 +147,18 @@ export interface SlotStat {
   failed: number;
 }
 
+/**
+ * Default slot set. Note that 'coverImage' is intentionally NOT in
+ * this list — image generation requires a separate OpenAI key + costs
+ * money + is opt-in. Explicit consent via slots: [..., 'coverImage'].
+ */
 const DEFAULT_SLOTS: EnhancedField[] = [
   'description',
   'briefingHtml',
   'quizQuestions',
 ];
+
+const DEFAULT_COVER_IMAGE_PATH = 'assets/cover.png';
 
 export async function enhanceCourse(
   course: CourseManifest,
@@ -99,7 +171,9 @@ export async function enhanceCourse(
     description: blankStat(),
     briefingHtml: blankStat(),
     quizQuestions: blankStat(),
+    coverImage: blankStat(),
   };
+  const assets: EnhanceAsset[] = [];
 
   if (!enabled) {
     warnings.push({
@@ -107,20 +181,41 @@ export async function enhanceCourse(
       code: 'ENHANCER_DISABLED',
       message: 'AI enhancement skipped (enabled=false). Returning template-derived course unchanged.',
     });
-    return { course, warnings, stats };
+    return { course, warnings, stats, assets };
   }
 
-  let client: EnhanceClient;
-  try {
-    client = new EnhanceClient(opts);
-  } catch (err) {
-    warnings.push({
-      level: 'warn',
-      code: 'ENHANCER_INIT_FAILED',
-      message: `Failed to initialize Anthropic client: ${stringifyError(err)}. Returning template-derived course.`,
-      suggestion: 'Set ANTHROPIC_API_KEY or pass apiKey in options.',
-    });
-    return { course, warnings, stats };
+  // Anthropic client is needed for any text slot. If only the
+  // coverImage slot is requested we skip Anthropic init entirely.
+  const needsAnthropic = slots.some(
+    (s) => s === 'description' || s === 'briefingHtml' || s === 'quizQuestions',
+  );
+  let client: EnhanceClient | undefined;
+  if (needsAnthropic) {
+    try {
+      client = new EnhanceClient(opts);
+    } catch (err) {
+      warnings.push({
+        level: 'warn',
+        code: 'ENHANCER_INIT_FAILED',
+        message: `Failed to initialize Anthropic client: ${stringifyError(err)}. Returning template-derived course.`,
+        suggestion: 'Set ANTHROPIC_API_KEY or pass apiKey in options.',
+      });
+      return { course, warnings, stats, assets };
+    }
+  }
+  // OpenAI client lazily — only when image slot is requested.
+  let imageClient: OpenAIImageClient | undefined;
+  if (slots.includes('coverImage')) {
+    try {
+      imageClient = new OpenAIImageClient(opts.openai ?? {});
+    } catch (err) {
+      warnings.push({
+        level: 'warn',
+        code: 'ENHANCER_IMAGE_INIT_FAILED',
+        message: `Failed to initialize OpenAI image client: ${stringifyError(err)}. Skipping coverImage slot.`,
+        suggestion: 'Set OPENAI_API_KEY or pass openai.apiKey in options.',
+      });
+    }
   }
 
   const cache =
@@ -139,7 +234,7 @@ export async function enhanceCourse(
   const enhancedFields: EnhancedField[] = [];
 
   // ---- Description slot ----
-  if (slots.includes('description')) {
+  if (slots.includes('description') && client) {
     stats.description.attempted = 1;
     const result = await runDescriptionSlot({
       client,
@@ -158,7 +253,7 @@ export async function enhanceCourse(
   }
 
   // ---- Briefing slot — runs once per BriefingModule ----
-  if (slots.includes('briefingHtml')) {
+  if (slots.includes('briefingHtml') && client) {
     const briefings = draft.modules.filter(
       (m): m is BriefingModule => m.type === 'briefing',
     );
@@ -190,7 +285,7 @@ export async function enhanceCourse(
   }
 
   // ---- Quiz slot — runs once per QuizModule ----
-  if (slots.includes('quizQuestions')) {
+  if (slots.includes('quizQuestions') && client) {
     const quizzes = draft.modules.filter((m): m is QuizModule => m.type === 'quiz');
     stats.quizQuestions.attempted = quizzes.length;
     for (const quiz of quizzes) {
@@ -219,9 +314,42 @@ export async function enhanceCourse(
     }
   }
 
+  // ---- Cover image slot ----
+  // Runs once per course. Uses gpt-image-2 (or override). Bytes go
+  // into the returned assets[] array; the manifest is stamped with a
+  // relative path (default "assets/cover.png"). The CLI writes the
+  // bytes to disk next to course.json; the packager later bundles
+  // anything matching that relative path into the SCORM ZIP.
+  if (slots.includes('coverImage') && imageClient) {
+    stats.coverImage.attempted = 1;
+    const result = await runImageSlot({
+      client: imageClient,
+      cache,
+      course: draft,
+      game: opts.game,
+      quality: opts.imageQuality ?? DEFAULT_IMAGE_QUALITY,
+      size: opts.imageSize ?? DEFAULT_IMAGE_SIZE,
+      assetPath: opts.coverImageAssetPath ?? DEFAULT_COVER_IMAGE_PATH,
+      warnings,
+    });
+    if (result.asset) {
+      assets.push(result.asset);
+      draft.coverImageUrl = result.asset.path;
+      stats.coverImage.succeeded = 1;
+      if (result.fromCache) stats.coverImage.cached = 1;
+      if (!enhancedFields.includes('coverImage')) enhancedFields.push('coverImage');
+    } else {
+      stats.coverImage.failed = 1;
+    }
+  }
+
   if (enhancedFields.length > 0) {
+    // Use the Anthropic model id if it was loaded; otherwise the
+    // image-only run stamps the image model id. This keeps a single
+    // string field on aiEnhanced.model meaningful in both cases.
+    const stampedModel = client?.model ?? imageClient?.model ?? 'unknown';
     draft.aiEnhanced = {
-      model: client.model,
+      model: stampedModel,
       enhancedAt: new Date().toISOString(),
       inputHash,
       enhancedFields,
@@ -234,7 +362,7 @@ export async function enhanceCourse(
     });
   }
 
-  return { course: draft, warnings, stats };
+  return { course: draft, warnings, stats, assets };
 }
 
 // -----------------------------------------------------------------
@@ -375,6 +503,70 @@ async function runQuizSlot(args: {
       ...(challenge?.challengeId
         ? { challengeIds: [challenge.challengeId] }
         : {}),
+    });
+    return {};
+  }
+}
+
+async function runImageSlot(args: {
+  client: OpenAIImageClient;
+  cache: EnhanceCache;
+  course: CourseManifest;
+  game?: GameTitle | undefined;
+  quality: ImageQuality;
+  size: ImageSize;
+  assetPath: string;
+  warnings: CourseWarning[];
+}): Promise<{ asset?: EnhanceAsset; fromCache?: boolean }> {
+  const { client, cache, course, game, quality, size, assetPath, warnings } = args;
+  try {
+    // Prefer the explicitly-passed game; otherwise infer from a
+    // ChallengeModule on the course (the transformer stamps it
+    // there). Falls back to undefined which the prompt builder
+    // handles with a generic scene.
+    const inferredGame =
+      game
+      ?? course.modules.find(
+        (m): m is ChallengeModule => m.type === 'challenge',
+      )?.game
+      ?? undefined;
+
+    const prompt = buildCoverImagePrompt(course, inferredGame);
+    const cacheKey = EnhanceCache.binaryKeyFor({
+      model: client.model,
+      slot: 'cover-image',
+      prompt: prompt.prompt,
+      quality,
+      size,
+    });
+
+    const cached = cache.getBinary(cacheKey);
+    if (cached) {
+      return {
+        asset: { path: assetPath, bytes: cached, mimeType: 'image/png' },
+        fromCache: true,
+      };
+    }
+
+    const generated = await client.generateImage({
+      prompt: prompt.prompt,
+      quality,
+      size,
+    });
+    cache.setBinary(cacheKey, generated.bytes);
+    return {
+      asset: {
+        path: assetPath,
+        bytes: generated.bytes,
+        mimeType: generated.mimeType,
+      },
+      fromCache: false,
+    };
+  } catch (err) {
+    warnings.push({
+      level: 'warn',
+      code: 'ENHANCER_IMAGE_FAILED',
+      message: `Failed to generate cover image: ${stringifyError(err)}. Course will ship without a cover image.`,
     });
     return {};
   }

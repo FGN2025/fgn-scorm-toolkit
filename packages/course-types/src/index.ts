@@ -72,7 +72,14 @@ export interface CourseManifest {
    * the default for transform() output.
    */
   aiEnhanced?: {
-    /** Anthropic model id used for the enhancement pass. */
+    /**
+     * Primary model id used for the enhancement pass. For Phase 1.4
+     * text slots this is the Anthropic model (e.g. claude-opus-4-7).
+     * For mixed text+image runs this is still the Anthropic model;
+     * the image model is implicit from the slot type. Future schema
+     * versions may add a per-slot model field if we ever route slots
+     * to multiple text models.
+     */
     model: string;
     /** ISO timestamp of when the enhancement ran. */
     enhancedAt: string;
@@ -83,15 +90,32 @@ export interface CourseManifest {
      */
     inputHash: string;
     /** Which fields were rewritten — useful for partial-failure recovery. */
-    enhancedFields: Array<'description' | 'briefingHtml' | 'quizQuestions'>;
+    enhancedFields: Array<
+      'description' | 'briefingHtml' | 'quizQuestions' | 'coverImage'
+    >;
   };
   /**
-   * Optional cover/thumbnail URLs. Reserved for Phase 1.4.5 (image
-   * generation) — present in the type so consumers can adopt the field
-   * now without a future schema bump. Absent on all v0 enhancer output.
+   * Path or URL to the course cover image. Phase 1.4.5 stamps this as
+   * a relative path (e.g. "assets/cover.png") that the SCORM packager
+   * resolves against the manifest's directory and bundles into the ZIP.
+   * Phase 1.4.6+ may also stamp this as an absolute URL when the image
+   * has been uploaded to fgn.academy's media library.
    */
   coverImageUrl?: string;
+  /**
+   * Smaller variant of the cover image — reserved for Phase 1.4.7 when
+   * the catalog grid on fgn.academy / broadbandworkforce.com needs
+   * thumbnails distinct from full-size covers.
+   */
   thumbnailUrl?: string;
+  /**
+   * Canonical hosted URL for the cover image, when uploaded to
+   * fgn.academy's media library (Phase 1.4.6+). Distinct from
+   * coverImageUrl, which may be a relative path inside the SCORM ZIP.
+   * Both can coexist; consumers pick whichever fits their context
+   * (admin UI prefers remote; offline SCORM player prefers local).
+   */
+  coverImageRemoteUrl?: string;
   modules: CourseModule[];
 }
 

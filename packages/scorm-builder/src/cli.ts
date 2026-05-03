@@ -36,19 +36,25 @@
  *   fgn-scorm enhance <course.json>
  *     --out <path>                  default: overwrite input
  *     --slots <list>                comma-separated subset of
- *                                   description,briefingHtml,quizQuestions
- *                                   (default: all three)
+ *                                   description,briefingHtml,quizQuestions,coverImage
+ *                                   (default: text-only — coverImage is
+ *                                   opt-in because it costs OpenAI credits)
  *     --cache-dir <path>            optional disk cache for repeated runs
- *     --model <id>                  default: claude-opus-4-7
+ *                                   (text + binary; safe to delete)
+ *     --model <id>                  default: claude-opus-4-7 (text)
  *     --effort <low|medium|high|xhigh|max>  default: API default (high)
- *     --dry-run                     skip API call; emit a warning only
- *     env: ANTHROPIC_API_KEY (required unless --dry-run)
- *     AI rewrite of course description, briefing HTML, and quiz
- *     questions via @fgn/course-enhancer. Additive — failures keep
- *     the template-derived content.
+ *     --image-quality <low|medium|high>  default: medium (~$0.04/image on gpt-image-2)
+ *     --image-size <1024x1024|1024x1536|1536x1024>  default: 1024x1024
+ *     --dry-run                     skip API calls; emit a warning only
+ *     env: ANTHROPIC_API_KEY  (required for text slots unless --dry-run)
+ *          OPENAI_API_KEY     (required when --slots includes coverImage)
+ *     AI rewrite of course description, briefing HTML, quiz questions,
+ *     and (opt-in) cover image via @fgn/course-enhancer. Additive —
+ *     failures keep the template-derived content. Binary assets (cover
+ *     image PNG) are written next to course.json under assets/.
  */
 
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { transform, type TransformInput } from './transform.js';
@@ -59,6 +65,8 @@ import {
   enhanceCourse,
   type EnhancedField,
   type EffortLevel,
+  type ImageQuality,
+  type ImageSize,
 } from '@fgn/course-enhancer';
 import type { ScormDestination } from '@fgn/brand-tokens';
 import type { CourseManifest, CourseWarning } from '@fgn/course-types';
@@ -101,6 +109,70 @@ function require_(flag: string | undefined, name: string): string {
 
 function ensureDir(path: string): void {
   mkdirSync(dirname(path), { recursive: true });
+}
+
+/**
+ * Detects whether a URL is a relative path that should be resolved
+ * against the directory of the manifest. Anything with a scheme
+ * (http://, https://, data:, file://) is left alone — the SCORM
+ * Player will fetch it at runtime.
+ */
+function isRelativeAssetUrl(url: string): boolean {
+  if (!url) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false; // has a scheme
+  if (url.startsWith('//')) return false; // protocol-relative
+  if (url.startsWith('/')) return false; // root-absolute, treated as external
+  return true;
+}
+
+/**
+ * Walks the manifest looking for relative-URL asset references that
+ * should be bundled into the SCORM ZIP at the same relative path.
+ * Reads bytes from disk, resolved against the directory containing
+ * course.json. Currently checks coverImageUrl, thumbnailUrl, and
+ * MediaModule.mediaUrl. New asset-bearing fields go here.
+ */
+function collectManifestAssets(
+  course: CourseManifest,
+  courseJsonPath: string,
+): Array<{ path: string; content: Uint8Array }> {
+  const baseDir = dirname(resolve(courseJsonPath));
+  const collected = new Map<string, Uint8Array>(); // path → bytes (dedup if multiple fields point to same file)
+
+  const candidates: Array<string | undefined> = [
+    course.coverImageUrl,
+    course.thumbnailUrl,
+    ...course.modules.map((m) =>
+      m.type === 'media' ? m.mediaUrl : undefined,
+    ),
+    ...course.modules.map((m) =>
+      m.type === 'media' ? m.posterUrl : undefined,
+    ),
+  ];
+
+  for (const url of candidates) {
+    if (!url || !isRelativeAssetUrl(url)) continue;
+    if (collected.has(url)) continue;
+    const onDisk = resolve(baseDir, url);
+    if (!existsSync(onDisk)) {
+      console.warn(
+        `[package] WARN  manifest references "${url}" but ${onDisk} does not exist; skipping`,
+      );
+      continue;
+    }
+    try {
+      collected.set(url, readFileSync(onDisk));
+    } catch (err) {
+      console.warn(
+        `[package] WARN  failed to read "${onDisk}": ${err instanceof Error ? err.message : err}; skipping`,
+      );
+    }
+  }
+
+  return Array.from(collected.entries()).map(([path, content]) => ({
+    path,
+    content,
+  }));
 }
 
 function logWarnings(warnings: CourseWarning[]): void {
@@ -184,11 +256,22 @@ async function cmdPackage(args: Args): Promise<void> {
   const whiteSvg = readFileSync(whiteSvgPath, 'utf8');
   const inkSvg = readFileSync(inkSvgPath, 'utf8');
 
+  // Pick up any binary assets the manifest references via relative
+  // paths (e.g. assets/cover.png produced by `fgn-scorm enhance
+  // --slots coverImage`). Resolved relative to course.json.
+  const manifestAssets = collectManifestAssets(course, courseJsonPath);
+
   console.log(`Packaging ${course.title} (${course.modules.length} modules) → ${out}`);
+  if (manifestAssets.length > 0) {
+    console.log(`  bundling ${manifestAssets.length} manifest asset${manifestAssets.length === 1 ? '' : 's'}:`);
+    for (const a of manifestAssets) console.log(`    + ${a.path} (${a.content.byteLength} bytes)`);
+  }
+
   const result = await packageCourse({
     course,
     playerHtml,
     brandAssets: { whiteSvg, inkSvg },
+    media: manifestAssets,
   });
 
   ensureDir(out);
@@ -301,7 +384,9 @@ async function cmdPublish(args: Args): Promise<void> {
 async function cmdEnhance(args: Args): Promise<void> {
   const courseJsonPath = args.positional[0];
   if (!courseJsonPath) {
-    console.error('Usage: fgn-scorm enhance <course.json> [--out PATH] [--slots a,b,c] [--cache-dir DIR] [--model ID] [--effort LEVEL] [--dry-run]');
+    console.error(
+      'Usage: fgn-scorm enhance <course.json> [--out PATH] [--slots a,b,c] [--cache-dir DIR] [--model ID] [--effort LEVEL] [--image-quality LEVEL] [--image-size WxH] [--dry-run]',
+    );
     process.exit(2);
   }
   const dryRun = args.flags['dry-run'] === 'true';
@@ -309,18 +394,36 @@ async function cmdEnhance(args: Args): Promise<void> {
   const cacheDir = args.flags['cache-dir'];
   const model = args.flags.model;
   const effort = args.flags.effort as EffortLevel | undefined;
+  const imageQuality = args.flags['image-quality'] as ImageQuality | undefined;
+  const imageSize = args.flags['image-size'] as ImageSize | undefined;
+  const imageModel = args.flags['image-model'];
   const slotList = args.flags.slots;
   const slots: EnhancedField[] | undefined = slotList
     ? slotList
         .split(',')
         .map((s) => s.trim())
         .filter((s): s is EnhancedField =>
-          s === 'description' || s === 'briefingHtml' || s === 'quizQuestions',
+          s === 'description'
+          || s === 'briefingHtml'
+          || s === 'quizQuestions'
+          || s === 'coverImage',
         )
     : undefined;
 
-  if (!dryRun && !process.env.ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY env var is required unless --dry-run is set.');
+  // Determine which API keys we need based on the requested slots.
+  // Default slots are text-only; coverImage is opt-in.
+  const requestedSlots = slots ?? ['description', 'briefingHtml', 'quizQuestions'];
+  const needsAnthropic = requestedSlots.some(
+    (s) => s !== 'coverImage',
+  );
+  const needsOpenAI = requestedSlots.includes('coverImage');
+
+  if (!dryRun && needsAnthropic && !process.env.ANTHROPIC_API_KEY) {
+    console.error('ANTHROPIC_API_KEY env var is required for text slots (use --dry-run or limit --slots to coverImage to skip).');
+    process.exit(2);
+  }
+  if (!dryRun && needsOpenAI && !process.env.OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY env var is required when --slots includes coverImage.');
     process.exit(2);
   }
 
@@ -334,6 +437,9 @@ async function cmdEnhance(args: Args): Promise<void> {
     ...(slots !== undefined ? { slots } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(imageQuality !== undefined ? { imageQuality } : {}),
+    ...(imageSize !== undefined ? { imageSize } : {}),
+    ...(imageModel !== undefined ? { openai: { model: imageModel } } : {}),
     cache: {
       ...(cacheDir !== undefined ? { persistDir: cacheDir } : {}),
     },
@@ -342,6 +448,16 @@ async function cmdEnhance(args: Args): Promise<void> {
   ensureDir(out);
   writeFileSync(out, JSON.stringify(result.course, null, 2), 'utf8');
   console.log(`\n✓ Wrote ${out}`);
+
+  // Write any binary assets (cover.png, etc.) to disk next to the
+  // manifest. The packager later picks them up by following relative
+  // URLs in the manifest.
+  for (const asset of result.assets) {
+    const assetOut = resolve(dirname(out), asset.path);
+    ensureDir(assetOut);
+    writeFileSync(assetOut, asset.bytes);
+    console.log(`✓ Wrote ${assetOut} (${asset.bytes.byteLength} bytes, ${asset.mimeType})`);
+  }
 
   console.log('\nSlot stats:');
   for (const [name, stat] of Object.entries(result.stats)) {
@@ -353,6 +469,9 @@ async function cmdEnhance(args: Args): Promise<void> {
     console.log(
       `\nStamped aiEnhanced: model=${result.course.aiEnhanced.model} fields=[${result.course.aiEnhanced.enhancedFields.join(', ')}]`,
     );
+  }
+  if (result.course.coverImageUrl) {
+    console.log(`Cover image: ${result.course.coverImageUrl}`);
   }
   logWarnings(result.warnings);
 
@@ -393,7 +512,11 @@ Commands:
                                role key required client-side)
   enhance <course.json>        AI-rewrite course description, briefing HTML,
                                and quiz questions via @fgn/course-enhancer.
-                               Requires ANTHROPIC_API_KEY (unless --dry-run).
+                               Opt-in --slots coverImage adds a generated
+                               cover.png next to course.json (gpt-image-2).
+                               Requires ANTHROPIC_API_KEY for text slots,
+                               OPENAI_API_KEY for the coverImage slot
+                               (unless --dry-run).
 
 See \`fgn-scorm <command> --help\` for command flags.`);
       break;

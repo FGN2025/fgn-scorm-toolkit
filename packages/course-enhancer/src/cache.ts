@@ -63,6 +63,32 @@ export class EnhanceCache {
       .digest('hex');
   }
 
+  /**
+   * Compute the deterministic cache key for an image slot. Image
+   * generations don't have a system prompt the way text slots do, but
+   * they do have a quality and size that affect the output bytes —
+   * those have to be in the key or different sizes collide.
+   */
+  static binaryKeyFor(args: {
+    model: string;
+    slot: 'cover-image' | 'thumbnail-image';
+    prompt: string;
+    quality: string;
+    size: string;
+  }): string {
+    return createHash('sha256')
+      .update(args.model)
+      .update('::')
+      .update(args.slot)
+      .update('::quality::')
+      .update(args.quality)
+      .update('::size::')
+      .update(args.size)
+      .update('::prompt::')
+      .update(args.prompt)
+      .digest('hex');
+  }
+
   /** Get a cached response. Falls back to disk if not in memory. */
   get(key: string): string | undefined {
     const memHit = this.mem.get(key);
@@ -92,6 +118,48 @@ export class EnhanceCache {
     } catch {
       // Disk failure shouldn't break enhancement — we already have the
       // value in memory and we'll just pay the API cost on the next run.
+    }
+  }
+
+  /**
+   * Get binary cached bytes (e.g. cover image PNG). Lives in
+   * persistDir/images/ to keep the per-key disk listing tidy. Memory
+   * cache is bypassed — image bytes are big and not worth keeping
+   * resident across slots in the same run.
+   */
+  getBinary(key: string): Buffer | undefined {
+    if (!this.persistDir) return undefined;
+    const path = join(this.persistDir, 'images', `${key}.bin`);
+    if (!existsSync(path)) return undefined;
+    try {
+      return readFileSync(path);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Cache binary bytes on disk. No-op if persistDir is undefined.
+   * Caller is responsible for the key. Files land in
+   * persistDir/images/<key>.bin — extension-agnostic so future image
+   * formats (WebP) work without a code change.
+   */
+  setBinary(key: string, value: Buffer): void {
+    if (!this.persistDir) return;
+    const dir = join(this.persistDir, 'images');
+    if (!existsSync(dir)) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch {
+        return;
+      }
+    }
+    const path = join(dir, `${key}.bin`);
+    try {
+      writeFileSync(path, value);
+    } catch {
+      // Disk failure shouldn't break enhancement; pay API cost again
+      // on next run.
     }
   }
 }

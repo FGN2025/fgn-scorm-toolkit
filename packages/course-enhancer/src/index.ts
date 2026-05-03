@@ -16,6 +16,7 @@ export type {
   EnhanceOptions,
   EnhanceResult,
   EnhancedField,
+  EnhanceAsset,
   SlotStat,
 } from './enhance.js';
 
@@ -25,6 +26,20 @@ export type {
   EffortLevel,
   SystemBlock,
 } from './anthropic-client.js';
+
+export {
+  OpenAIImageClient,
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_IMAGE_QUALITY,
+  DEFAULT_IMAGE_SIZE,
+} from './openai-client.js';
+export type {
+  OpenAIClientOptions,
+  ImageQuality,
+  ImageSize,
+  GenerateImageArgs,
+  GeneratedImage,
+} from './openai-client.js';
 
 export { EnhanceCache } from './cache.js';
 export type { EnhanceCacheOptions } from './cache.js';
