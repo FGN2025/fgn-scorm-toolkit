@@ -128,20 +128,9 @@ try {
   Write-Host $diff
   Write-Host ""
 
-  # Note: here-string closing '@ must be at column 0 — PowerShell parser
-  # rule, not a style choice. Don't indent it.
-  $commitMsg = @"
-Add scorm-build edge function (Phase 2 v0 step 3 from fgn-scorm-toolkit)
-
-Skeleton edge function with auth + admin check + Work Order
-validation. Vendored toolkit source in _lib/ ready for step 4
-to wire transform/enhance/package.
-
-Source: https://github.com/FGN2025/fgn-scorm-toolkit/tree/main/supabase/functions/scorm-build
-Spec:   https://github.com/FGN2025/fgn-scorm-toolkit/blob/main/docs/PHASE_2_SPEC.md
-"@
-
-  git commit -m $commitMsg
+  # Single-line commit message to dodge PowerShell here-string parsing
+  # quirks. Detailed context lives in the toolkit repo's spec doc.
+  git commit -m "Add scorm-build edge function (Phase 2 v0 step 3 from fgn-scorm-toolkit). Skeleton with auth + admin check + Work Order validation. Vendored toolkit source in _lib/ ready for step 4."
   if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: git commit failed." -ForegroundColor Red
     exit 1
