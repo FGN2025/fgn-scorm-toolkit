@@ -335,6 +335,7 @@ Recommendation: **A.** One canonical Player URL per stratify-workforce release; 
 10. UPSERT into `scorm_courses` (matching on `(work_order_id, destination)`):
     - On conflict: update existing row, replace storage paths, increment internal version-tag
     - On insert: new row, `is_published = true` by default for v0 (admin can flip later)
+    - **Regenerate UX:** the Course Builder UI shows a confirmation modal before triggering a build that would replace an existing row ("This will replace the existing course at this Work Order + destination. Continue?"). Spec decision — preserves admin agency without adding the full draft/publish workflow that v0.6 versioning will eventually introduce.
 11. Return success payload
 
 **Response (success — 200, JSON):**
@@ -371,7 +372,13 @@ For v0, write directly to storage via service role. Skip the `media-upload` roun
 
 **Timeouts:**
 
-Supabase Pro tier: 150s. v0 stays synchronous within that. Estimated wall-clock per build:
+Lovable Cloud (managed Supabase, used by stratify-workforce) limits, tier-independent for wall-clock:
+
+- Edge function wall-clock: **150 seconds** — the hard request timeout
+- CPU time: 2s (Pro-equivalent)
+- Background tasks via `EdgeRuntime.waitUntil()`: up to **400 seconds** total
+
+Estimated wall-clock per build:
 
 | Operation set | Estimated time |
 |---|---|
@@ -380,7 +387,7 @@ Supabase Pro tier: 150s. v0 stays synchronous within that. Estimated wall-clock 
 | + Cover regeneration | + 30–90s |
 | Both AI slots | 90–150s — at the timeout edge |
 
-If AI bundles regularly exceed 150s, v0.5 adds background jobs.
+v0 stays synchronous within 150s. **Escape hatch for AI-heavy bundles:** wrap the long tail (post-validation work — AI calls + storage uploads) in `EdgeRuntime.waitUntil()` and return immediately with the row id, then poll. This is a deferred-implementation pattern available without queuing infrastructure. Use only if the synchronous path actually hits 150s in production. v0.5 (full background jobs with a `scorm_build_jobs` table) is the long-term answer if frequent.
 
 ---
 
@@ -658,15 +665,17 @@ Reorder based on real production needs once v0 ships.
 
 ---
 
-## Open questions to revisit before implementation
+## Open questions — RESOLVED 2026-05-03
 
-1. **Edge function tier confirmation** — confirm Lovable's stratify-workforce Supabase project is on a tier supporting 150s timeouts. If on free tier (60s), v0.5 (background jobs) becomes a v0 prerequisite.
-2. **Brand reviewer for v0** — who from FGN signs off on the generated cover quality before v0 ships to all admins? The Brand Guide v2 §8.6 has a QA checklist; one named reviewer per slice.
-3. **SCORM Player vendoring vs. publishing** — long-term, publishing `@fgn/scorm-player` to npm/jsr lets both the toolkit (ZIP bundling) and stratify-workforce (native hosting) consume the same source. v0 vendors; bookmark for v1.
-4. **Regenerate UX** — does regenerate immediately replace, or does it stage a draft that admin reviews + publishes? v0 spec says "immediately replace"; v0.6 versioning could change this.
-5. **Cross-Work-Order course reuse** — what if two different Work Orders share the same source challenge? Each gets its own SCORM row by design, but is that wasteful? Decision: yes, per-WO is intentional — admin curates per-WO context.
+All five blocked-on-decisions resolved before Phase 2 implementation kicks off:
 
-These don't block writing the spec. They block starting implementation.
+1. **Edge function timeout** — ✅ resolved. Lovable Cloud runs on Pro-equivalent: 150s wall-clock, 2s CPU. `EdgeRuntime.waitUntil()` available for up to 400s background tasks if needed. v0 stays synchronous; waitUntil() is the escape hatch if AI-heavy bundles brush the 150s ceiling. v0.5 still scopes proper background jobs for frequent long-runs.
+2. **Brand reviewer for v0** — ✅ resolved. **Darcy reviews directly.** Apply Brand Guide v2 §8.6 checklist to the first 5–10 covers when v0 lands; sign off before opening the Course Builder to other admins.
+3. **SCORM Player vendoring vs. publishing** — ✅ resolved. v0 vendors. Note as engineering-backlog item; revisit at Phase 2.x or v1 if duplication starts to bite.
+4. **Regenerate UX** — ✅ resolved. **Confirmation modal** before a build that would replace an existing `(work_order_id, destination)` row. Modal text: "This will replace the existing course at this Work Order + destination. Continue?" Full draft/publish workflow deferred to v0.6 versioning.
+5. **Cross-Work-Order course reuse** — ✅ resolved. **Duplication is acceptable.** Per-WO rows even when two WOs share `source_challenge_id`. Admin curates per-WO context (different titles, framing, brand mode).
+
+Phase 2 v0 is fully scoped and unblocked.
 
 ---
 
