@@ -1,36 +1,51 @@
 /**
- * scorm-build — fgn.academy edge function for the Course Builder UI.
+ * scorm-build -- fgn.academy edge function for the Course Builder UI.
  *
  * Phase 2 v0 spec: docs/PHASE_2_SPEC.md in the FGN SCORM toolkit repo.
  *
- * STATUS: Step 3 skeleton.
+ * STATUS: Step 4 -- transform + storage + DB upsert wired in.
  *
- * What this skeleton does:
- *   - Validates the request shape
+ * What this function does:
+ *   - Validates the request shape (workOrderId UUID, destination /
+ *     brandMode enums, image-options-imply-enhanceCover)
  *   - Authenticates the caller via the standard Supabase session JWT
  *     (Authorization: Bearer <token>)
- *   - Checks that the calling user is an admin or super_admin via
- *     the public.user_roles table
- *   - Looks up the requested Work Order, confirms it is_active and
- *     has a source_challenge_id
- *   - Returns a stub response with the validated inputs
+ *   - Checks the calling user has admin or super_admin in user_roles
+ *   - Looks up the source Work Order, confirms is_active and a
+ *     source_challenge_id is present
+ *   - Looks up any existing scorm_courses row at (workOrderId,
+ *     destination) -- the response carries isReplacement so the UI
+ *     can show a confirmation modal
+ *   - Runs transform() against play.fgn.gg, fetching the challenge
+ *     and the curated cover_image_url passthrough (Phase 1.4.5.1)
+ *   - Uploads course.json + assets/ to media-assets/scorm-courses/
+ *     <courseId>/ via service role
+ *   - INSERT or UPDATE the scorm_courses row (replacement uses the
+ *     existing id; new build uses crypto.randomUUID()). is_published
+ *     defaults to true so the Learning Resource card renders right
+ *     after publish.
+ *   - Returns { courseId, manifestUrl, zipUrl: null, playerUrl,
+ *     workOrderUrl, coverImageUrl, title, isReplacement, warnings }
  *
- * What this skeleton does NOT do (yet — coming in steps 4-6):
- *   - Run transform() against play.fgn.gg
- *   - Run enhance() (text or cover slots)
- *   - Run packageCourse() to produce a SCORM ZIP
- *   - Write artifacts to Supabase Storage
- *   - Insert/update scorm_courses row
- *
- * The vendored toolkit source is at ./_lib/. It's not yet imported
- * here — keeping the skeleton minimal lets us validate the auth
- * chain end-to-end before plumbing the build code through.
+ * Not yet wired -- coming in subsequent steps:
+ *   - Step 4.5: packageCourse() into a downloadable ZIP. Requires
+ *     vendored or storage-hosted scorm-player HTML + brand SVGs.
+ *   - Step 5: enhance() text slots (description / briefingHtml /
+ *     quizQuestions) when enhanceText=true. Anthropic key required.
+ *   - Step 6: enhance() coverImage slot when enhanceCover=true.
+ *     OpenAI key required. Replaces the passthrough cover.
  *
  * Deploy on FGN2025/stratify-workforce. Same Lovable-managed Supabase
  * project as scorm-publish, scorm-launch-status, media-upload.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { transform } from './_lib/scorm-builder/transform.ts';
+import {
+  createSupabaseFetcher,
+  type SupabaseLike,
+} from './_lib/scorm-builder/fetcher.ts';
+import type { ScormDestination } from './_lib/brand-tokens.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -121,7 +136,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------------------
-    // 2. Authenticate the caller. Phase 2 v0 spec — session-based JWT.
+    // 2. Authenticate the caller. Phase 2 v0 spec -- session-based JWT.
     // --------------------------------------------------------------
     const authHeader = req.headers.get('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -129,7 +144,7 @@ Deno.serve(async (req) => {
     }
     const jwt = authHeader.slice('Bearer '.length);
 
-    // Use a service-role client to call auth.getUser(jwt) — this
+    // Use a service-role client to call auth.getUser(jwt) -- this
     // bypasses RLS for the auth check itself. The JWT is the
     // authoritative identity.
     const adminSupabase = createClient(supabaseUrl, serviceKey, {
@@ -185,7 +200,7 @@ Deno.serve(async (req) => {
       return jsonError(400, `brandMode must be one of [${Array.from(ALLOWED_BRAND_MODES).join(', ')}]; got: ${body.brandMode}`);
     }
 
-    // Optional fields — validate enums where present
+    // Optional fields -- validate enums where present
     if (body.scormVersion && !ALLOWED_SCORM_VERSIONS.has(body.scormVersion)) {
       return jsonError(400, `scormVersion must be one of [${Array.from(ALLOWED_SCORM_VERSIONS).join(', ')}]`);
     }
@@ -196,7 +211,7 @@ Deno.serve(async (req) => {
       return jsonError(400, `imageSize must be one of [${Array.from(ALLOWED_IMAGE_SIZES).join(', ')}]`);
     }
 
-    // Image options without enhanceCover is suspicious — warn loudly
+    // Image options without enhanceCover is suspicious -- warn loudly
     if (
       (body.imageQuality || body.imageSize || body.imageModel || body.uploadCoverToAcademy)
       && !body.enhanceCover
@@ -244,42 +259,215 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existingErr) {
-      // Not fatal — table might not exist yet (pre-migration). Log,
+      // Not fatal -- table might not exist yet (pre-migration). Log,
       // continue with isReplacement=false.
       console.warn('scorm_courses lookup failed (table missing?):', existingErr.message);
     }
 
     // --------------------------------------------------------------
-    // 7. STUB RESPONSE — Step 3 ends here. Step 4 wires in
-    //    transform/enhance/package and replaces this stub.
+    // 7. Set up the play.fgn.gg client + fetcher used by transform().
+    //    Public anon key -- RLS-safe for reading published challenges.
     // --------------------------------------------------------------
+    const playSupabaseUrl = Deno.env.get('FGN_PLAY_SUPABASE_URL');
+    const playAnonKey = Deno.env.get('FGN_PLAY_SUPABASE_ANON_KEY');
+    if (!playSupabaseUrl || !playAnonKey) {
+      return jsonError(
+        500,
+        'edge function misconfigured: missing FGN_PLAY_SUPABASE_URL or FGN_PLAY_SUPABASE_ANON_KEY',
+      );
+    }
+
+    const playSupabase = createClient(playSupabaseUrl, playAnonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const fetcher = createSupabaseFetcher(playSupabase as unknown as SupabaseLike);
+
+    // --------------------------------------------------------------
+    // 8. Generate the courseId up-front so we can use it as both the
+    //    DB row id AND the storage path prefix. Avoids a second write
+    //    after insert. Replacement flows reuse the existing row's id.
+    // --------------------------------------------------------------
+    const courseId = existing?.id ?? crypto.randomUUID();
+    const storagePrefix = `scorm-courses/${courseId}`;
+
+    // --------------------------------------------------------------
+    // 9. Run transform -- fetches the challenge from play.fgn.gg,
+    //    builds the manifest, fetches the cover image bytes
+    //    (Phase 1.4.5.1 passthrough), returns CourseManifest +
+    //    assets[]. Note: the toolkit's destinationToMode mapping is
+    //    the source of truth for brandMode; the body.brandMode field
+    //    is informational. The toolkit also uses bundleId to
+    //    derive course.id; we pass our DB courseId so the manifest's
+    //    internal id matches the DB row.
+    // --------------------------------------------------------------
+    let transformResult;
+    try {
+      transformResult = await transform(
+        {
+          challengeIds: [wo.source_challenge_id],
+          destination: body.destination as ScormDestination,
+          scormVersion: (body.scormVersion ?? '1.2') as '1.2' | 'cmi5',
+          bundleId: courseId,
+          ...(body.title ? { title: body.title } : {}),
+          ...(body.description ? { description: body.description } : {}),
+        },
+        fetcher,
+      );
+    } catch (err) {
+      return jsonError(
+        502,
+        `transform failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const courseManifest = transformResult.course;
+    const assets = transformResult.assets;
+    const transformWarnings = transformResult.warnings;
+
+    // Block on error-level warnings (e.g., COVER_IMAGE_FETCH_FAILED is
+    // a warn, not an error -- passes through; ChallengeNotPublished
+    // would have thrown above).
+    const blockingWarnings = transformWarnings.filter((w) => w.level === 'error');
+    if (blockingWarnings.length > 0) {
+      return jsonError(400, 'transform produced blocking warnings', {
+        warnings: blockingWarnings,
+      });
+    }
+
+    // --------------------------------------------------------------
+    // 10. Upload assets[] (cover image, etc.) to media-assets/
+    //     scorm-courses/<courseId>/<asset.path>.
+    // --------------------------------------------------------------
+    for (const asset of assets) {
+      const objectPath = `${storagePrefix}/${asset.path}`;
+      const { error: assetErr } = await adminSupabase.storage
+        .from('media-assets')
+        .upload(objectPath, asset.bytes, {
+          contentType: asset.mimeType,
+          upsert: true,
+          cacheControl: '31536000', // 1 year, content-addressed prefix
+        });
+      if (assetErr) {
+        return jsonError(
+          500,
+          `failed to upload asset ${asset.path}: ${assetErr.message}`,
+        );
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 11. Upload course.json. Short cache so admin regenerates land
+    //     fast (the actual asset bytes under assets/ are
+    //     content-addressed by their path-extension and can cache
+    //     long; the manifest changes on every regen).
+    // --------------------------------------------------------------
+    const courseJsonBytes = new TextEncoder().encode(
+      JSON.stringify(courseManifest, null, 2),
+    );
+    const { error: manifestErr } = await adminSupabase.storage
+      .from('media-assets')
+      .upload(`${storagePrefix}/course.json`, courseJsonBytes, {
+        contentType: 'application/json',
+        upsert: true,
+        cacheControl: 'no-cache',
+      });
+    if (manifestErr) {
+      return jsonError(500, `failed to upload course.json: ${manifestErr.message}`);
+    }
+
+    const { data: manifestPub } = adminSupabase.storage
+      .from('media-assets')
+      .getPublicUrl(`${storagePrefix}/course.json`);
+    const manifestUrl = manifestPub.publicUrl;
+
+    // --------------------------------------------------------------
+    // 12. Build the absolute cover_image_url for the DB row. The
+    //     manifest carries a relative path (e.g., "assets/cover.jpg")
+    //     which works for both the SCORM ZIP (sibling to course.json)
+    //     and the native player (URL-resolved against manifest_url).
+    //     For the Learning Resource card on the Work Order page we
+    //     need an absolute URL the <img> tag can load directly.
+    // --------------------------------------------------------------
+    let absoluteCoverUrl: string | null = null;
+    if (courseManifest.coverImageUrl) {
+      const { data: coverPub } = adminSupabase.storage
+        .from('media-assets')
+        .getPublicUrl(`${storagePrefix}/${courseManifest.coverImageUrl}`);
+      absoluteCoverUrl = coverPub.publicUrl;
+    }
+
+    // --------------------------------------------------------------
+    // 13. Upsert the scorm_courses row. Service role bypasses RLS;
+    //     we set generated_by explicitly to the calling admin's
+    //     user.id for provenance.
+    // --------------------------------------------------------------
+    const dbRow = {
+      id: courseId,
+      work_order_id: wo.id,
+      destination: body.destination,
+      title: courseManifest.title,
+      description: courseManifest.description ?? null,
+      cover_image_url: absoluteCoverUrl,
+      scorm_version: courseManifest.scormVersion,
+      manifest_url: manifestUrl,
+      zip_url: null, // Step 4.5+ will populate this
+      bundle_id: courseManifest.id,
+      is_published: true,
+      published_at: new Date().toISOString(),
+      generated_by: user.id,
+      source_challenge_id: wo.source_challenge_id,
+      ai_enhanced: courseManifest.aiEnhanced ?? null,
+    };
+
+    if (existing) {
+      // Replace the existing row in place. updated_at handled by
+      // the trigger.
+      const { id: _id, ...updateRow } = dbRow;
+      const { error: updateErr } = await adminSupabase
+        .from('scorm_courses')
+        .update(updateRow)
+        .eq('id', existing.id);
+      if (updateErr) {
+        return jsonError(
+          500,
+          `failed to update scorm_courses row: ${updateErr.message}`,
+        );
+      }
+    } else {
+      const { error: insertErr } = await adminSupabase
+        .from('scorm_courses')
+        .insert(dbRow);
+      if (insertErr) {
+        return jsonError(
+          500,
+          `failed to insert scorm_courses row: ${insertErr.message}`,
+        );
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 14. Return success payload. playerUrl is only meaningful for
+    //     fgn-academy destination (where the native /scorm-player/
+    //     route renders the course); external destinations rely on
+    //     the (future) zipUrl for download distribution.
+    // --------------------------------------------------------------
+    const playerUrl =
+      body.destination === 'fgn-academy'
+        ? `https://fgn.academy/scorm-player/${courseId}/launch`
+        : null;
+    const workOrderUrl = `https://fgn.academy/work-orders/${wo.id}`;
+
     return jsonOk({
-      status: 'stub',
-      message:
-        'Skeleton edge function — auth + validation passed. Build implementation lands in Step 4 of Phase 2 v0 implementation order.',
-      validated: {
-        userId: user.id,
-        userEmail: user.email,
-        workOrderId: wo.id,
-        workOrderTitle: wo.title,
-        workOrderGameTitle: wo.game_title,
-        sourceChallengeId: wo.source_challenge_id,
-        destination: body.destination,
-        brandMode: body.brandMode,
-        scormVersion: body.scormVersion ?? '1.2',
-        enhanceText: body.enhanceText ?? false,
-        enhanceCover: body.enhanceCover ?? false,
-      },
+      status: 'ok',
+      courseId,
+      manifestUrl,
+      zipUrl: null, // Step 4.5 will populate after wiring packageCourse()
+      playerUrl,
+      workOrderUrl,
+      coverImageUrl: absoluteCoverUrl,
+      title: courseManifest.title,
       isReplacement: existing !== null && existing !== undefined,
-      existing: existing
-        ? {
-            id: existing.id,
-            title: existing.title,
-            isPublished: existing.is_published,
-            createdAt: existing.created_at,
-            updatedAt: existing.updated_at,
-          }
-        : null,
+      warnings: transformWarnings,
     });
   } catch (err) {
     console.error('scorm-build unexpected error:', err);
