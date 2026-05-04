@@ -17,7 +17,7 @@
     3. Stages, commits, and pushes to main.
     4. Prints the message to send to Lovable to trigger redeploy.
 
-  Idempotent — safe to re-run after toolkit changes; only pushes if
+  Idempotent -- safe to re-run after toolkit changes; only pushes if
   there are real diffs.
 
 .NOTES
@@ -118,7 +118,7 @@ try {
   $diff = git diff --cached --stat
   if (-not $diff) {
     Write-Host ""
-    Write-Host "No changes vs. remote — scorm-build is already up to date on stratify-workforce." -ForegroundColor Green
+    Write-Host "No changes vs. remote -- scorm-build is already up to date on stratify-workforce." -ForegroundColor Green
     Write-Host "Skipping commit + push. If Lovable hasn't deployed yet, ask it to redeploy." -ForegroundColor Yellow
     exit 0
   }
