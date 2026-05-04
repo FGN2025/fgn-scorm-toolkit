@@ -1,0 +1,696 @@
+# Phase 2 — Course Builder + native fgn.academy SCORM hosting
+
+**Status:** scope locked, design ready for Lovable + future Claude sessions to implement.
+
+**Scope:** admin-facing UI in `stratify-workforce` (fgn.academy) that lets a non-CLI admin produce a SCORM 1.2 course from any active fgn.academy Work Order. For the `fgn-academy` destination, the resulting course is **stored on fgn.academy and attached as a Learning Resource on the source Work Order** so end users see it on the Work Order page and launch it directly. For external destinations, the course is delivered as a downloadable ZIP only.
+
+**Audience:** future Claude sessions implementing this; Lovable's React/Supabase developers; FGN brand reviewers.
+
+**Supersedes:** the v0 design draft from earlier in the same doc series. Earlier draft missed the Learning Resource attachment requirement, which turns out to be the primary consumption path for `fgn-academy` destination courses, not a deferrable "v0.3 native publishing" feature.
+
+---
+
+## Locked decisions
+
+| # | Decision | Resolution |
+|---|---|---|
+| 1 | **Where does the toolkit run?** | Option A — new edge function `scorm-build` on stratify-workforce that runs transform → optional enhance → package, persists artifacts, and returns the row. |
+| 2 | **Scope** | v0 as listed below; multi-challenge bundling, lesson reordering, manual text override deferred to v0.1+. |
+| 3 | **UI location** | Two entry points: (a) standalone page at `Admin Dashboard → Course Builder`, (b) button on the Work Order admin section that pre-fills source Work Order. |
+| 4 | **Visibility** | Visible to all admins (`user_roles.role IN ('admin', 'super_admin')`). No feature flag. |
+| 5 | **Edge function auth** | Session-based — admin's logged-in Supabase JWT, validated via `supabase.auth.getUser()` + `user_roles` admin check. |
+| 6 | **Source unit** | **Work Order** (fgn.academy), not the underlying challenge directly. Work Orders are the FGN.academy unit of consumption; they wrap challenges via `source_challenge_id`. Course Builder operates Work-Order-first. |
+| 7 | **Multiplicity** | **One SCORM course per (Work Order, destination).** Same Work Order can have up to 4 variants (fgn-academy, broadband-workforce, simu-cdl-path, external-lms). Re-generating within a destination replaces the existing row. UNIQUE constraint on `(work_order_id, destination)`. |
+| 8 | **External destinations** | `broadband-workforce`, `simu-cdl-path`, `external-lms` are **download-only**. Admin downloads the ZIP and uploads it to those platforms manually. Only `fgn-academy` triggers Learning Resource attachment. |
+| 9 | **SCORM Player hosting** | Hosted directly inside the stratify-workforce Vite app at `/scorm-player/:courseId/launch` (vendored from `@fgn/scorm-player` source). |
+| 10 | **v0 progress tracking** | Native fgn.academy player runs in **preview mode** — content displays, but lesson-level progress is NOT yet persisted to fgn.academy's progress tables. Full progress tracking is v0.x. External-LMS ZIPs use standard SCORM 1.2 API as already implemented. |
+
+---
+
+## Phase 2 v0 — what an admin can do
+
+### From the Work Order page (most common entry)
+
+1. Admin opens any Work Order detail page in admin mode (e.g., `/work-orders/4d58c766-…`)
+2. Sees an "Admin Details" section already on the page (per the screenshot you shared)
+3. New action button: **Generate SCORM Course**
+4. Click → opens Course Builder modal/page with source Work Order pre-selected
+5. Picks destination, brand mode, optional AI toggles
+6. Click Generate → progress display → success state
+7. **For `fgn-academy`:** course is stored, the Work Order page now shows a new Learning Resource card. Admin sees a "View on Work Order" link.
+8. **For external destinations:** download ZIP button, no Learning Resource attachment.
+
+### From the standalone admin page (power user / multi-step)
+
+1. Admin opens `Admin Dashboard → Course Builder`
+2. Searches or picks a Work Order from a dropdown of all active Work Orders
+3. Same fields and flow as the Work Order entry
+
+Both entry points hit the same `scorm-build` edge function with the same payload shape.
+
+### What the end user sees
+
+On any Work Order page, the "Learning Resources" section now renders **two kinds of cards**:
+
+1. **Existing `sim_resources` cards** — game-wide promotional links (e.g., "Tech Certification → broadbandworkforce.com" for all Fiber-Tech Work Orders). Unchanged from today.
+2. **New `scorm_courses` cards** — Work-Order-specific SCORM courses with `is_published = true` AND `destination = 'fgn-academy'`. Card title, description, and cover image come from the row. "Launch Course" button → opens `/scorm-player/{id}/launch`.
+
+Cards from both sources render with the same visual treatment.
+
+---
+
+## What's IN v0
+
+- Single-challenge → single SCORM course (one Work Order at a time)
+- Default cover passthrough from play.fgn.gg's `cover_image_url` (Phase 1.4.5.1)
+- Optional AI text rewrite (Phase 1.4)
+- Optional AI cover regeneration (Phase 1.4.5)
+- Cover hosting on fgn.academy media library (Phase 1.4.6)
+- Storage of full course manifest + bundled assets in fgn.academy storage
+- Native rendering of the SCORM Player at `/scorm-player/:courseId/launch`
+- Learning Resource card on Work Order page (only for `fgn-academy` destination)
+- ZIP download (all destinations)
+- "Regenerate" replaces existing row within a (Work Order, destination) tuple
+- Standalone admin page + Work Order admin button, both entry points
+
+## What's explicitly OUT of v0
+
+- Multi-challenge bundling (one challenge per course)
+- Lesson reordering UI
+- Manual text override (preview AI output but no edit-before-generate)
+- Native progress tracking on fgn.academy player (preview mode only — see Decision 10)
+- Per-tenant white-labeling
+- Bulk operations
+- Background jobs (synchronous within edge function timeout)
+- Course versioning history (regenerate replaces; no audit log of prior versions in v0)
+
+---
+
+## Architecture
+
+```
+                      Admin (browser)
+                             │
+            ┌────────────────┴────────────────┐
+            │ Entry A: Admin > Course Builder │
+            │ Entry B: WO admin button        │
+            ▼
+         Course Builder UI (stratify-workforce React)
+            │
+            │ POST /functions/v1/scorm-build
+            │ Authorization: Bearer <admin JWT>
+            ▼
+         scorm-build edge function (Deno)
+            │
+            ├─► play.fgn.gg Supabase  (anon read of challenge + tasks + game)
+            │
+            ├─► transform()           [vendored toolkit code]
+            ├─► fetch cover_image     [Phase 1.4.5.1 passthrough]
+            ├─► enhance() text        [Phase 1.4, if enableTextEnhance]
+            ├─► enhance() cover       [Phase 1.4.5, if enableCoverEnhance]
+            │
+            ├─► fgn.academy Storage   (write course.json + assets/* unzipped)
+            ├─► fgn.academy Storage   (write the full ZIP for download)
+            ├─► fgn.academy DB        (insert/update scorm_courses row)
+            │
+            ▼
+         Returns { courseId, manifestUrl, zipUrl, warnings, learningResourceVisibleAt }
+            │
+            ▼
+         Course Builder UI shows success state
+            │
+            ├─► For fgn-academy: link to Work Order page
+            └─► For external: download button on zipUrl
+
+
+────────────  later, when end user opens the Work Order  ────────────
+
+         End user (browser, anonymous or logged-in)
+            │
+            │ GET /work-orders/<id>
+            ▼
+         Work Order detail page (stratify-workforce React)
+            │
+            ├─► query sim_resources by game_title  (existing — game-wide cards)
+            └─► query scorm_courses by work_order_id, is_published=true
+                                                   (new — per-WO cards)
+                Renders both lists in Learning Resources section
+            │
+            │ User clicks "Launch Course" on a scorm_courses card
+            │ → /scorm-player/<courseId>/launch
+            ▼
+         SCORM Player route (stratify-workforce React)
+            │
+            ├─► query scorm_courses, fetch manifestUrl
+            └─► render <iframe src="<player-bundle-url>?manifest=<manifestUrl>">
+                                       [vendored from @fgn/scorm-player]
+            │
+            │ Player loads course.json + assets, runs course content
+            ▼
+         End user sees course content
+            (v0 = preview mode; no progress tracked yet)
+```
+
+---
+
+## Database changes — new `scorm_courses` table
+
+This is the only new table for v0. No changes to existing tables.
+
+```sql
+create table public.scorm_courses (
+  id uuid primary key default gen_random_uuid(),
+
+  -- Source Work Order (required, FK)
+  work_order_id uuid not null references public.work_orders(id) on delete cascade,
+
+  -- Destination determines distribution path. UNIQUE per (work_order_id, destination)
+  -- enforces the locked multiplicity decision (#7).
+  destination text not null check (destination in (
+    'fgn-academy', 'broadband-workforce', 'simu-cdl-path', 'external-lms'
+  )),
+
+  -- Display metadata (drives the Learning Resource card on the Work Order page)
+  title text not null,
+  description text,
+  cover_image_url text,   -- public URL, typically media-assets/scorm-covers/...
+
+  -- SCORM build artifacts
+  scorm_version text not null default '1.2'
+    check (scorm_version in ('1.2', 'cmi5')),
+  manifest_url text not null,    -- public URL to course.json in storage
+  zip_url text,                  -- public URL to the full ZIP for download
+  bundle_id text not null,       -- matches CourseManifest.id at the toolkit level
+
+  -- Publish state — only published rows render as Learning Resource cards
+  is_published boolean not null default false,
+  published_at timestamptz,
+
+  -- Build provenance (debugging, audit, future regen UX)
+  generated_by uuid references auth.users(id),
+  source_challenge_id uuid,      -- play.fgn.gg challenge id (cross-database, no FK)
+  ai_enhanced jsonb,             -- mirrors CourseManifest.aiEnhanced shape
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  unique (work_order_id, destination)
+);
+
+create index scorm_courses_work_order_idx on public.scorm_courses(work_order_id);
+create index scorm_courses_published_idx on public.scorm_courses(is_published)
+  where is_published;
+
+-- updated_at trigger
+create trigger scorm_courses_updated_at
+before update on public.scorm_courses
+for each row execute function public.set_scorm_updated_at();
+-- (function already exists from Phase 1.3 migration)
+
+-- RLS
+alter table public.scorm_courses enable row level security;
+
+create policy "anyone can read published scorm courses"
+on public.scorm_courses for select
+to public
+using (is_published = true);
+
+create policy "admins can read all scorm courses"
+on public.scorm_courses for select
+to authenticated
+using (
+  exists (
+    select 1 from public.user_roles
+    where user_id = auth.uid() and role in ('admin', 'super_admin')
+  )
+);
+
+create policy "admins can manage scorm courses"
+on public.scorm_courses for insert, update, delete
+to authenticated
+using (
+  exists (
+    select 1 from public.user_roles
+    where user_id = auth.uid() and role in ('admin', 'super_admin')
+  )
+)
+with check (
+  exists (
+    select 1 from public.user_roles
+    where user_id = auth.uid() and role in ('admin', 'super_admin')
+  )
+);
+```
+
+### Why a new table instead of extending existing `courses`/`modules`/`lessons`
+
+The existing `courses`/`modules`/`lessons` system on fgn.academy models native authored content as a tree of typed lessons (currently `lesson_type IN ('quiz', 'reading')`). SCORM is not a list of typed lessons — it's a self-contained iframe-launchable bundle with its own internal structure governed by the SCORM 1.2 spec.
+
+Trying to fit SCORM into `courses` → `modules` → `lessons` would either:
+- Add a new `lesson_type = 'scorm'` whose `content` JSONB is "the entire SCORM manifest" — defeats the purpose of normalization, and lessons aren't iframe-launchable anyway
+- Force admins to author lesson-by-lesson in fgn.academy and ALSO have a SCORM bundle — duplicate work
+
+A separate `scorm_courses` table is the right boundary because SCORM courses have a fundamentally different lifecycle (built atomically by the toolkit, launched as a unit) than native authored courses (assembled lesson-by-lesson by admins).
+
+If at some future point fgn.academy unifies the experience (e.g., a Learning Resource card can launch either a native course OR a SCORM course), a polymorphic linking table can sit on top of both `courses` and `scorm_courses`. v0 doesn't need that.
+
+---
+
+## Storage layout
+
+All in the existing `media-assets` bucket (already public, already used for cover images via Phase 1.4.6):
+
+```
+media-assets/
+  scorm-covers/          ← already populated by media-upload (Phase 1.4.6)
+    bundle-XXXX-YYYY.png
+    smoke-test-431ced69.png
+    ...
+  scorm-courses/         ← NEW — unzipped course content for native player
+    {scorm_courses.id}/
+      course.json
+      assets/
+        cover.jpg          ← passthrough from play.fgn.gg
+        cover.png          ← OR AI-regenerated
+      index.html           ← compiled @fgn/scorm-player (might also be served from app)
+  scorm-bundles/         ← NEW — full ZIPs for external download
+    {scorm_courses.id}.zip
+```
+
+The unzipped layout under `scorm-courses/{id}/` mirrors what's inside the ZIP. The native player route reads `course.json` from this path; relative URLs in the manifest (e.g., `assets/cover.jpg`) resolve correctly against the same directory.
+
+For external destinations, only the ZIP at `scorm-bundles/` is needed — admin downloads it and uploads to whichever platform.
+
+The SCORM Player HTML can be served two ways (decision deferrable):
+- **A. Bundled into stratify-workforce as a Vite route** — `fgn.academy/scorm-player/index.html`, manifest URL passed via query param
+- **B. Stored alongside each course** — `media-assets/scorm-courses/{id}/index.html`
+
+Recommendation: **A.** One canonical Player URL per stratify-workforce release; manifest URL is the variable. Keeps the Player a single source of truth and one update path.
+
+---
+
+## Edge function: `scorm-build`
+
+**Endpoint:** `POST https://vfzjfkcwromssjnlrhoo.supabase.co/functions/v1/scorm-build`
+
+**Auth chain:**
+
+1. `Authorization: Bearer <jwt>` → 401 if missing
+2. `supabase.auth.getUser(jwt)` → 401 if invalid/expired
+3. `user_roles.role IN ('admin', 'super_admin')` → 403 if not admin
+4. `work_orders.id = req.workOrderId AND is_active = true` → 404 if missing/inactive
+5. `work_orders.source_challenge_id` resolved → if null, 400 ("Work Order has no source challenge to transform")
+
+**Request body:**
+
+```jsonc
+{
+  "workOrderId": "4d58c766-74a0-48c7-8756-b08000e26974",  // required
+  "destination": "fgn-academy",                            // required (one of 4 enums)
+  "brandMode": "arcade",                                   // required (arcade | enterprise)
+  "scormVersion": "1.2",                                   // optional, default '1.2'
+  "title": "...",                                          // optional override of WO title
+  "description": "...",                                    // optional override
+
+  "enhanceText": false,                                    // toggle text slots
+  "enhanceCover": false,                                   // toggle coverImage slot
+  "imageQuality": "medium",                                // when enhanceCover=true
+  "imageSize": "1536x1024",                                // when enhanceCover=true
+  "imageModel": "gpt-image-2",                             // optional override
+  "uploadCoverToAcademy": true                             // when enhanceCover=true; default true
+}
+```
+
+**Server-side flow:**
+
+1. Validate auth + work order
+2. Resolve `source_challenge_id` → fetch challenge from play.fgn.gg via anon key
+3. Run `transform()` → CourseManifest + assets[] (cover passthrough)
+4. If `enhanceText` → run `enhance()` text slots (Anthropic)
+5. If `enhanceCover` → run `enhance()` coverImage slot (OpenAI gpt-image-2)
+6. Optionally upload regenerated cover via existing `media-upload` flow (Phase 1.4.6)
+7. Run `packageCourse()` → SCORM ZIP bytes
+8. Upload unzipped contents to `media-assets/scorm-courses/<new-id>/`
+9. Upload full ZIP to `media-assets/scorm-bundles/<new-id>.zip`
+10. UPSERT into `scorm_courses` (matching on `(work_order_id, destination)`):
+    - On conflict: update existing row, replace storage paths, increment internal version-tag
+    - On insert: new row, `is_published = true` by default for v0 (admin can flip later)
+11. Return success payload
+
+**Response (success — 200, JSON):**
+
+```jsonc
+{
+  "courseId": "uuid-of-the-scorm-courses-row",
+  "manifestUrl": "https://vfzj.../media-assets/scorm-courses/<id>/course.json",
+  "zipUrl": "https://vfzj.../media-assets/scorm-bundles/<id>.zip",
+  "playerUrl": "https://fgn.academy/scorm-player/<id>/launch",   // null for external destinations
+  "workOrderUrl": "https://fgn.academy/work-orders/<work-order-id>", // for "view on Work Order" link
+  "warnings": [/* CourseWarning[] from toolkit */],
+  "isReplacement": false  // true if a row already existed at (work_order_id, destination)
+}
+```
+
+**Response shape choice — JSON, not binary ZIP:**
+
+Original v0 spec returned binary ZIP bytes. Now that storage persistence is part of v0, JSON-with-URLs is cleaner. Browser downloads via `window.location.assign(zipUrl)` or anchor click on the URL — same UX, simpler edge function.
+
+**Required env vars (Supabase function secrets):**
+
+| Var | Purpose |
+|---|---|
+| `SUPABASE_URL` | auto-provided |
+| `SUPABASE_SERVICE_ROLE_KEY` | auto-provided (storage writes, scorm_courses upsert) |
+| `FGN_PLAY_SUPABASE_URL` | `https://yrhwzmkenjgiujhofucx.supabase.co` |
+| `FGN_PLAY_SUPABASE_ANON_KEY` | for play.fgn.gg challenge reads |
+| `ANTHROPIC_API_KEY` | text slots only |
+| `OPENAI_API_KEY` | cover slot only |
+| `FGN_ACADEMY_APP_KEY` | only if calling existing `media-upload` (could also write directly via service role; cleaner to skip the inter-function call) |
+
+For v0, write directly to storage via service role. Skip the `media-upload` round-trip from inside `scorm-build` — that function is still useful for standalone "upload cover" calls but isn't needed inside the build pipeline.
+
+**Timeouts:**
+
+Supabase Pro tier: 150s. v0 stays synchronous within that. Estimated wall-clock per build:
+
+| Operation set | Estimated time |
+|---|---|
+| Pure passthrough (no AI) | 10–30s (challenge fetch, cover passthrough, package, storage uploads) |
+| + Text enhancement | + 30–60s |
+| + Cover regeneration | + 30–90s |
+| Both AI slots | 90–150s — at the timeout edge |
+
+If AI bundles regularly exceed 150s, v0.5 adds background jobs.
+
+---
+
+## Toolkit code reuse strategy
+
+Same approach as Phase 1.4.6 / `scorm-publish`: **vendor toolkit source** into `supabase/functions/scorm-build/_lib/`. Copy `packages/course-types/src/*.ts`, `packages/scorm-builder/src/*.ts`, `packages/course-enhancer/src/*.ts`. Adjust workspace imports (`@fgn/...` → relative paths).
+
+Trade-offs vs. published packages:
+- **Pro:** zero dep management, runs in Deno without npm/jsr publish flow
+- **Con:** keeping vendored copy in sync with toolkit — manual rebundle on toolkit changes
+
+For v0, this is fine. Phase 2.x can publish the toolkit packages to jsr or npm if the duplication becomes painful.
+
+---
+
+## SCORM Player as a stratify-workforce route
+
+Vendor `packages/scorm-player/src/*` from the toolkit into `stratify-workforce/src/scorm-player/`. The Player is itself a Vite/React app — ports cleanly into stratify-workforce as a sub-route.
+
+**Route:** `/scorm-player/:courseId/launch`
+
+**Component flow:**
+
+1. Read `:courseId` URL param
+2. Fetch `scorm_courses` row by id
+3. If `is_published = false` and viewer is not admin → 404
+4. Construct manifest URL from row's `manifest_url` field
+5. Render the existing PlayerShell from the toolkit's player package
+6. Player loads `course.json` from manifest URL, runs course content
+
+**v0 progress-tracking caveat:**
+
+The toolkit's `@fgn/scorm-player` is built around the SCORM 1.2 API (`window.API.LMSGetValue`, `window.API.LMSSetValue`, etc.) which expects a parent LMS frame to provide the API. When running natively on fgn.academy, no LMS frame is present.
+
+For v0:
+- The Player can detect "no SCORM API parent" and fall back to **localStorage-only tracking**
+- Progress persists in the user's browser but is NOT synced to fgn.academy's user_lesson_progress tables
+- Display banner: "Progress tracked locally; full progress sync available soon."
+
+For v0.x:
+- Add a `useFgnAcademyProgress(courseId)` hook that POSTs to a new edge function `scorm-progress-sync`
+- Writes to a new `scorm_course_progress` table keyed by (user_id, course_id)
+- Replaces localStorage fallback when the user is logged in
+
+This is acknowledged as a v0 limitation in the success-state UI of the Course Builder.
+
+---
+
+## Course Builder UI
+
+### Sidebar entry (Entry Point A)
+
+Add new item under Admin Dashboard in stratify-workforce's admin nav (matches the screenshot's left sidebar):
+
+```
+Admin Dashboard
+  ├─ Users
+  ├─ Events
+  ├─ Work Orders
+  ├─ Evidence Review
+  ├─ SIM Games
+  ├─ SIM Resources
+  ├─ Media Library
+  ├─ Registration Codes
+  ├─ Skills Paths
+  ├─ Challenge Registry
+  └─ Course Builder    ← new
+```
+
+Suggested icon: 📦 file-archive / box-package / similar to "produce a SCORM file" intent.
+
+### Work Order admin section (Entry Point B)
+
+The Work Order detail page already has an "Admin Details" expandable section visible in the screenshot. Add a button there:
+
+```
+[ Admin Details ▼ ]
+  ...
+  ┌─────────────────────────────────┐
+  │ ▶ Generate SCORM Course          │
+  └─────────────────────────────────┘
+```
+
+Click → opens Course Builder (modal or new page) with `workOrderId` pre-filled.
+
+If a `scorm_courses` row already exists for any destination, show the existing variants:
+
+```
+SCORM Courses
+  ┌────────────────────────────────────────┐
+  │ fgn-academy   • Published 2026-05-04   │
+  │ View | Regenerate | Unpublish | Delete │
+  └────────────────────────────────────────┘
+  ┌────────────────────────────────────────┐
+  │ + Generate for another destination     │
+  └────────────────────────────────────────┘
+```
+
+### Page layout (single-page form, both entry points reuse)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Course Builder                                         │
+│  Create a SCORM 1.2 course from a Work Order.           │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Source Work Order *                                    │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ [search…]            ▼                            │ │
+│  └───────────────────────────────────────────────────┘ │
+│  Game: <auto-filled from WO>                            │
+│  Source challenge: <auto-filled from WO>                │
+│                                                         │
+│  Destination *           Brand mode *                   │
+│  ┌─────────────────┐    ┌─────────────────────┐        │
+│  │ fgn-academy   ▼ │    │ arcade           ▼  │        │
+│  └─────────────────┘    └─────────────────────┘        │
+│                                                         │
+│  ─── AI Enhancement (optional, costs API credits) ───   │
+│                                                         │
+│  ☐ Rewrite text via Claude  (~$0.05–0.15 per course)    │
+│  ☐ Regenerate cover image via gpt-image-2 (~$0.04)      │
+│      [Quality ▼] [Size ▼]                              │
+│                                                         │
+│  ┌───────────────────┐  ┌───────────────────┐          │
+│  │  Generate SCORM   │  │  Cancel           │          │
+│  └───────────────────┘  └───────────────────┘          │
+│                                                         │
+│  (If a course already exists for this WO + destination, │
+│   show "This will replace the existing course." banner) │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### States
+
+- **Idle** — form, ready to fill
+- **Validating** — fast, server-side check that source challenge exists; ~1s
+- **Generating** — disabled form, progress spinner, status text:
+  - "Fetching challenge from play.fgn.gg…"
+  - "Rewriting text…" (only if enhanceText)
+  - "Generating cover image…" (only if enhanceCover)
+  - "Packaging SCORM ZIP…"
+  - "Uploading to fgn.academy…"
+- **Success — fgn-academy:**
+  - Banner: "Course published"
+  - Action 1: "View on Work Order →" (links to `/work-orders/<id>`)
+  - Action 2: "Download ZIP" (zipUrl from response)
+  - Action 3: "Generate another" (resets form)
+  - Warnings list (collapsible)
+- **Success — external destination:**
+  - Banner: "ZIP ready for download"
+  - Action 1: "Download ZIP" (zipUrl)
+  - Action 2: "Generate another"
+- **Error** — error banner with detail, "Try again" button
+
+### Component breakdown (Lovable refines specifics)
+
+```
+src/pages/admin/CourseBuilder.tsx
+src/components/admin/CourseBuilder/
+  ├─ WorkOrderPicker.tsx           ← searchable dropdown, queries work_orders
+  ├─ DestinationSelect.tsx
+  ├─ BrandModeSelect.tsx
+  ├─ TextEnhanceToggle.tsx
+  ├─ CoverEnhanceToggle.tsx        ← checkbox + nested options
+  ├─ ExistingCoursesPanel.tsx      ← if scorm_courses rows exist for this WO
+  ├─ GenerateButton.tsx
+  ├─ SuccessPanel.tsx              ← branches on destination
+  └─ useScormBuild.ts              ← React Query mutation
+src/components/work-orders/admin/
+  └─ ScormCoursesAdmin.tsx         ← Entry Point B: shows existing variants + button
+src/scorm-player/                  ← vendored from @fgn/scorm-player
+  ├─ App.tsx
+  ├─ ...
+  └─ index.tsx
+src/pages/scorm-player/
+  └─ Launch.tsx                    ← /scorm-player/:courseId/launch
+```
+
+### Learning Resources card on Work Order page (end-user view)
+
+Update the existing component that renders Learning Resources to query both data sources:
+
+```tsx
+// existing
+const { data: simResources } = useSimResources(workOrder.game_title);
+
+// new
+const { data: scormCourses } = useScormCourses({
+  workOrderId: workOrder.id,
+  publishedOnly: true,
+});
+
+return (
+  <LearningResourcesSection>
+    {simResources?.map((r) => <SimResourceCard {...r} />)}
+    {scormCourses?.map((c) => <ScormCourseCard
+      key={c.id}
+      title={c.title}
+      description={c.description}
+      coverImageUrl={c.cover_image_url}
+      launchUrl={`/scorm-player/${c.id}/launch`}
+    />)}
+  </LearningResourcesSection>
+);
+```
+
+Both card types render with the same visual treatment.
+
+---
+
+## Authentication & authorization summary
+
+| Action | Auth |
+|---|---|
+| Open Course Builder admin page | session JWT + admin role |
+| POST `/scorm-build` | session JWT + admin role |
+| GET `scorm_courses` (published only) | anonymous (RLS allows) |
+| GET `scorm_courses` (unpublished) | session JWT + admin role |
+| INSERT/UPDATE/DELETE `scorm_courses` | session JWT + admin role (RLS) |
+| GET `media-assets/scorm-courses/{id}/...` | anonymous (bucket public) |
+| GET `media-assets/scorm-bundles/{id}.zip` | anonymous (bucket public) — ZIPs are not security-sensitive; SCORM courses are designed to be redistributable |
+| Open `/scorm-player/:courseId/launch` | anonymous if course is_published; session JWT + admin if not |
+
+Note: making the ZIP URL anonymous-readable is intentional. SCORM courses are designed to be redistributable artifacts; we already host the unzipped contents publicly for the native player, so making the ZIP also public is consistent. Lock down via storage policies if a specific course needs gating later.
+
+---
+
+## Implementation order for v0
+
+Each step is independently testable. Steps 1–6 are edge function / DB work; 7–11 are React/UI. Can parallelize after step 4.
+
+1. **Database migration** — `scorm_courses` table + RLS policies
+2. **Vendor toolkit source** into `supabase/functions/scorm-build/_lib/`
+3. **Skeleton edge function** — auth + admin check + 404 work-order check, returns stub response
+4. **Wire transform → package (passthrough only)** — no AI, returns real artifacts in storage, real DB row
+5. **Wire enhanceText** — feature flag, returns enhanced text in stored artifacts
+6. **Wire enhanceCover** — feature flag, returns enhanced cover
+7. **Vendor SCORM Player** into stratify-workforce as a route
+8. **Course Builder admin page** (Entry Point A) — form, mutation hook, success state
+9. **Sidebar nav entry**
+10. **Work Order admin section** (Entry Point B) — existing variants list + "Generate" button + opens form
+11. **Learning Resources card** — query `scorm_courses` alongside `sim_resources`, render both card types
+
+### Acceptance gate for v0 → ship
+
+- [ ] `scorm_courses` migration applied without affecting existing tables
+- [ ] Edge function passes manual tests for all 4 destinations
+- [ ] AI text + AI cover both work end-to-end
+- [ ] Course Builder page renders correctly in admin theme (matches existing sidebar visual)
+- [ ] Work Order admin button entry point works
+- [ ] Learning Resource card appears on Work Order page after `fgn-academy` publish
+- [ ] SCORM Player launch URL renders the Player and loads course content
+- [ ] ZIP download works for all destinations
+- [ ] Regenerate replaces (no duplicate rows)
+- [ ] Brand reviewer signs off on a sample of generated covers (per Brand Guide v2 §8.6)
+
+---
+
+## Slicing roadmap (post-v0)
+
+| Slice | What | Effort |
+|---|---|---|
+| **v0.1** Manual text override | Preview AI text output, edit before generate | 2-3 days |
+| **v0.2** Multi-challenge bundling | Pick N challenges → one course | 3-5 days |
+| **v0.3** Native progress tracking | `scorm_course_progress` table + edge function + Player hook; replaces v0's localStorage fallback | 5-7 days |
+| **v0.4** Lesson reordering | Drag-and-drop within a multi-challenge bundle | 2 days |
+| **v0.5** Background jobs | Builds >150s queue async; status polling | 1 week |
+| **v0.6** Course versioning | Audit history of regenerations; rollback | 3-4 days |
+| **v0.7** Bulk operations | Generate covers for N challenges; batch publish a Skills Path | 1 week |
+| **v0.8** Per-tenant white-labeling | Tenant-aware brand overrides on course covers | 5-7 days |
+
+Reorder based on real production needs once v0 ships.
+
+---
+
+## Open questions to revisit before implementation
+
+1. **Edge function tier confirmation** — confirm Lovable's stratify-workforce Supabase project is on a tier supporting 150s timeouts. If on free tier (60s), v0.5 (background jobs) becomes a v0 prerequisite.
+2. **Brand reviewer for v0** — who from FGN signs off on the generated cover quality before v0 ships to all admins? The Brand Guide v2 §8.6 has a QA checklist; one named reviewer per slice.
+3. **SCORM Player vendoring vs. publishing** — long-term, publishing `@fgn/scorm-player` to npm/jsr lets both the toolkit (ZIP bundling) and stratify-workforce (native hosting) consume the same source. v0 vendors; bookmark for v1.
+4. **Regenerate UX** — does regenerate immediately replace, or does it stage a draft that admin reviews + publishes? v0 spec says "immediately replace"; v0.6 versioning could change this.
+5. **Cross-Work-Order course reuse** — what if two different Work Orders share the same source challenge? Each gets its own SCORM row by design, but is that wasteful? Decision: yes, per-WO is intentional — admin curates per-WO context.
+
+These don't block writing the spec. They block starting implementation.
+
+---
+
+## How v0 connects to what's already shipped
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │  Phase 2 v0: scorm-build edge fn             │
+                    │   + Course Builder admin UI (2 entry points) │
+                    │   + scorm_courses table                      │
+                    │   + SCORM Player route                       │
+                    │   + Learning Resource card on WO page        │
+                    └─────────────────────┬────────────────────────┘
+                                          │
+                ┌──────────┬──────────────┼──────────────┬──────────┐
+                ▼          ▼              ▼              ▼          ▼
+         transform()   enhance()    media-upload    pack()    scorm-launch-status
+         Phase 1.4.5.1 Phase 1.4   Phase 1.4.6     Phase 1.3 Phase 1.5
+         passthrough   AI text+img upload          ZIP build  bridge
+                                                              (existing)
+```
+
+All toolkit primitives shipped, validated, committed. v0 is the cockpit + storage + UI integration that makes them usable without the CLI.
+
+---
+
+— End of Phase 2 v0 spec —
