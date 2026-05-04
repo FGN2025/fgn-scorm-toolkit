@@ -32,18 +32,12 @@
 -- ===================================================================
 
 
--- Helper for updated_at triggers — re-declared so this migration is
--- self-contained even if the Phase 1.3 migration that originally
--- defined this function hasn't been applied here yet.
-create or replace function public.set_scorm_updated_at()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
+-- Note on helpers: this migration uses two existing helpers from
+-- stratify-workforce that are dominant patterns in the codebase:
+--   - update_updated_at_column()   for the updated_at trigger
+--   - has_role(auth.uid(), '<role>') for RLS admin checks
+-- We do NOT redeclare them here. If this migration is ever ported
+-- to a project that lacks them, define them inline first.
 
 
 -- ===================================================================
@@ -120,10 +114,11 @@ create index scorm_courses_published_idx
   on public.scorm_courses(is_published)
   where is_published;
 
--- updated_at trigger
+-- updated_at trigger — uses the existing update_updated_at_column()
+-- helper (the dominant pattern in stratify-workforce).
 create trigger scorm_courses_updated_at
 before update on public.scorm_courses
-for each row execute function public.set_scorm_updated_at();
+for each row execute function public.update_updated_at_column();
 
 
 -- ===================================================================
@@ -142,17 +137,18 @@ to public
 using (is_published = true);
 
 -- 2. Admins see ALL courses, published or not. Lets the Course
---    Builder UI show drafts in the existing-variants panel.
+--    Builder UI show drafts in the existing-variants panel. Uses the
+--    has_role() helper that's the dominant convention in
+--    stratify-workforce (see RoleEscalationControls.tsx and dozens
+--    of existing RLS policies on ai_model_configs, authorized_apps,
+--    system_audit_logs, etc.).
 create policy "admins can read all scorm courses"
 on public.scorm_courses
 for select
 to authenticated
 using (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid()
-      and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 );
 
 -- 3. Admins can insert/update/delete. Used by the scorm-build edge
@@ -167,18 +163,12 @@ on public.scorm_courses
 for all
 to authenticated
 using (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid()
-      and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 )
 with check (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid()
-      and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 );
 
 
