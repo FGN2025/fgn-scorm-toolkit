@@ -207,7 +207,7 @@ function emitQuizPlaceholderWarnings(
     {
       level: 'warn',
       code: 'QUIZ_PLACEHOLDER_NEEDS_AUTHORING',
-      message: `${placeholderQuizChallengeIds.length} challenge${placeholderQuizChallengeIds.length === 1 ? '' : 's'} require${placeholderQuizChallengeIds.length === 1 ? 's' : ''} a knowledge-gate quiz. The transformer emitted a single placeholder question per quiz — replace with real scenario-based questions in the Course Builder before publishing.`,
+      message: `${placeholderQuizChallengeIds.length} challenge${placeholderQuizChallengeIds.length === 1 ? '' : 's'} require${placeholderQuizChallengeIds.length === 1 ? 's' : ''} a knowledge-gate quiz. The transformer emitted a single placeholder question per quiz -- replace with real scenario-based questions in the Course Builder before publishing.`,
       challengeIds: placeholderQuizChallengeIds,
       suggestion:
         'Open each placeholder quiz in the Course Builder, write 5 scenario-based questions per FGN curriculum standards, and set 80% pass threshold (default).',

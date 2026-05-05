@@ -128,9 +128,16 @@ try {
   Write-Host $diff
   Write-Host ""
 
-  # Single-line commit message to dodge PowerShell here-string parsing
-  # quirks. Detailed context lives in the toolkit repo's spec doc.
-  git commit -m "Add scorm-build edge function (Phase 2 v0 step 3 from fgn-scorm-toolkit). Skeleton with auth + admin check + Work Order validation. Vendored toolkit source in _lib/ ready for step 4."
+  # Auto-derive a useful commit message from the toolkit's HEAD: short
+  # SHA + first line of the latest commit message. Avoids stale
+  # hardcoded text when the toolkit advances (Phase 2 step 3 / 4 /
+  # 4.5 / etc.). Detailed context lives in the toolkit repo.
+  Push-Location $ToolkitRoot
+  $toolkitSha = (git rev-parse --short HEAD).Trim()
+  $toolkitSubj = (git log -1 --pretty=%s).Trim()
+  Pop-Location
+  $autoMsg = "Sync scorm-build edge function from fgn-scorm-toolkit @ $toolkitSha`: $toolkitSubj"
+  git commit -m $autoMsg
   if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: git commit failed." -ForegroundColor Red
     exit 1
