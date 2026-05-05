@@ -23,7 +23,7 @@
 | 7 | **Multiplicity** | **One SCORM course per (Work Order, destination).** Same Work Order can have up to 4 variants (fgn-academy, broadband-workforce, simu-cdl-path, external-lms). Re-generating within a destination replaces the existing row. UNIQUE constraint on `(work_order_id, destination)`. |
 | 8 | **External destinations** | `broadband-workforce`, `simu-cdl-path`, `external-lms` are **download-only**. Admin downloads the ZIP and uploads it to those platforms manually. Only `fgn-academy` triggers Learning Resource attachment. |
 | 9 | **SCORM Player hosting** | Hosted directly inside the stratify-workforce Vite app at `/scorm-player/:courseId/launch` (vendored from `@fgn/scorm-player` source). |
-| 10 | **v0 progress tracking** | Native fgn.academy player runs in **preview mode** — content displays, but lesson-level progress is NOT yet persisted to fgn.academy's progress tables. Full progress tracking is v0.x. External-LMS ZIPs use standard SCORM 1.2 API as already implemented. |
+| 10 | **v0 progress tracking** | Native fgn.academy player runs in **preview mode** — content displays, but lesson-level progress is NOT yet persisted to fgn.academy's progress tables. Full progress tracking is v0.3 (contract LOCKED 2026-05-02 — see "v0.3 coordination contract" section below). External-LMS ZIPs use standard SCORM 1.2 API as already implemented. |
 
 ---
 
@@ -182,9 +182,11 @@ create table public.scorm_courses (
   zip_url text,                  -- public URL to the full ZIP for download
   bundle_id text not null,       -- matches CourseManifest.id at the toolkit level
 
-  -- Publish state — only published rows render as Learning Resource cards
-  is_published boolean not null default false,
-  published_at timestamptz,
+  -- Publish state — only published rows render as Learning Resource cards.
+  -- v0 default is true (admins usually want immediate publish); admins can
+  -- flip to false for staging via the admin UI.
+  is_published boolean not null default true,
+  published_at timestamptz default now(),
 
   -- Build provenance (debugging, audit, future regen UX)
   generated_by uuid references auth.users(id),
@@ -201,13 +203,15 @@ create index scorm_courses_work_order_idx on public.scorm_courses(work_order_id)
 create index scorm_courses_published_idx on public.scorm_courses(is_published)
   where is_published;
 
--- updated_at trigger
+-- updated_at trigger — uses the existing update_updated_at_column() helper
+-- (the dominant pattern in stratify-workforce; do NOT redeclare).
 create trigger scorm_courses_updated_at
 before update on public.scorm_courses
-for each row execute function public.set_scorm_updated_at();
--- (function already exists from Phase 1.3 migration)
+for each row execute function public.update_updated_at_column();
 
--- RLS
+-- RLS — uses the has_role() helper (dominant convention in stratify-workforce;
+-- super_admin is implicitly covered by the admin role check, but keeping both
+-- explicit is harmless and matches existing policies elsewhere in the project).
 alter table public.scorm_courses enable row level security;
 
 create policy "anyone can read published scorm courses"
@@ -219,28 +223,24 @@ create policy "admins can read all scorm courses"
 on public.scorm_courses for select
 to authenticated
 using (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid() and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 );
 
 create policy "admins can manage scorm courses"
-on public.scorm_courses for insert, update, delete
+on public.scorm_courses for all
 to authenticated
 using (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid() and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 )
 with check (
-  exists (
-    select 1 from public.user_roles
-    where user_id = auth.uid() and role in ('admin', 'super_admin')
-  )
+  has_role(auth.uid(), 'admin')
+  or has_role(auth.uid(), 'super_admin')
 );
 ```
+
+> **Status:** applied to FGN2025/stratify-workforce on 2026-05-02. See `supabase/migrations/20260504120000_scorm_courses_table.sql` for the canonical, applied form.
 
 ### Why a new table instead of extending existing `courses`/`modules`/`lessons`
 
@@ -423,16 +423,14 @@ Vendor `packages/scorm-player/src/*` from the toolkit into `stratify-workforce/s
 The toolkit's `@fgn/scorm-player` is built around the SCORM 1.2 API (`window.API.LMSGetValue`, `window.API.LMSSetValue`, etc.) which expects a parent LMS frame to provide the API. When running natively on fgn.academy, no LMS frame is present.
 
 For v0:
-- The Player can detect "no SCORM API parent" and fall back to **localStorage-only tracking**
-- Progress persists in the user's browser but is NOT synced to fgn.academy's user_lesson_progress tables
-- Display banner: "Progress tracked locally; full progress sync available soon."
+- The Player runs in **preview mode** — content displays, but no progress is persisted server-side.
+- The route component exposes a `reportProgress(state)` callsite that is a **no-op in v0** but is the integration point for v0.3. Wiring this hook is part of Step 7 so v0.3 can ship without re-plumbing the Player.
+- Display banner: "Preview mode — progress sync ships in v0.3."
 
-For v0.x:
-- Add a `useFgnAcademyProgress(courseId)` hook that POSTs to a new edge function `scorm-progress-sync`
-- Writes to a new `scorm_course_progress` table keyed by (user_id, course_id)
-- Replaces localStorage fallback when the user is logged in
-
-This is acknowledged as a v0 limitation in the success-state UI of the Course Builder.
+For v0.3 — **contract LOCKED 2026-05-02** (see "v0.3 coordination contract" section below):
+- Lovable's Migration #1 ships the `scorm_course_progress` table + `skill_credentials` enrichment + partial unique index.
+- Lovable's edge function `scorm-session-complete` accepts the locked inbound shape and performs the locked outbound writes.
+- Toolkit-side: replace v0's no-op `reportProgress(state)` with a real `useFgnAcademyProgress(courseId)` hook that POSTs to `scorm-session-complete`. Schema is stable from day one — no breaking changes between v0 hook stub and v0.3 wiring.
 
 ---
 
@@ -627,7 +625,7 @@ Each step is independently testable. Steps 1–6 are edge function / DB work; 7�
 4. **Wire transform → package (passthrough only)** — no AI, returns real artifacts in storage, real DB row
 5. **Wire enhanceText** — feature flag, returns enhanced text in stored artifacts
 6. **Wire enhanceCover** — feature flag, returns enhanced cover
-7. **Vendor SCORM Player** into stratify-workforce as a route
+7. **Vendor SCORM Player** into stratify-workforce as a route. Includes a `reportProgress(state)` no-op stub on the route component matching the v0.3 contract's inbound shape — v0 calls it but does nothing; v0.3 wires it to `scorm-session-complete`
 8. **Course Builder admin page** (Entry Point A) — form, mutation hook, success state
 9. **Sidebar nav entry**
 10. **Work Order admin section** (Entry Point B) — existing variants list + "Generate" button + opens form
@@ -654,7 +652,7 @@ Each step is independently testable. Steps 1–6 are edge function / DB work; 7�
 |---|---|---|
 | **v0.1** Manual text override | Preview AI text output, edit before generate | 2-3 days |
 | **v0.2** Multi-challenge bundling | Pick N challenges → one course | 3-5 days |
-| **v0.3** Native progress tracking | `scorm_course_progress` table + edge function + Player hook; replaces v0's localStorage fallback | 5-7 days |
+| **v0.3** Native progress tracking | `scorm_course_progress` table + `scorm-session-complete` edge fn + `useFgnAcademyProgress` hook. **Contract LOCKED 2026-05-02 — see "v0.3 coordination contract" section.** Lovable Migration #1 ships the table and `skill_credentials` enrichment alongside; toolkit-side wires the Player hook to the live endpoint. | 3-5 days (toolkit-side; Lovable scoped separately) |
 | **v0.4** Lesson reordering | Drag-and-drop within a multi-challenge bundle | 2 days |
 | **v0.5** Background jobs | Builds >150s queue async; status polling | 1 week |
 | **v0.6** Course versioning | Audit history of regenerations; rollback | 3-4 days |
@@ -662,6 +660,93 @@ Each step is independently testable. Steps 1–6 are edge function / DB work; 7�
 | **v0.8** Per-tenant white-labeling | Tenant-aware brand overrides on course covers | 5-7 days |
 
 Reorder based on real production needs once v0 ships.
+
+---
+
+## v0.3 coordination contract — `scorm-session-complete`
+
+**Status:** LOCKED 2026-05-02 between toolkit (Claude/Darcy) and stratify-workforce (Lovable). Both sides build to this shape; v0.3 ships when toolkit Step 7 hook is live and Lovable's Migration #1 + edge function are deployed.
+
+**Why this section exists:** v0 ships with the SCORM Player in preview mode (no progress sync). v0.3 is the unlock that makes the native player a first-class learning surface — it persists resume state, awards XP on first pass, and writes Skill Passport credentials. The contract below is what both sides agreed to before either started building, so v0 step 7 can stub the hook against the final shape with zero rework when v0.3 lands.
+
+### Ownership split
+
+| Side | Owns |
+|---|---|
+| **Lovable (stratify-workforce)** | Migration #1 (`skill_credentials` enrichment + `scorm_course_progress` table + partial unique index); the `scorm-session-complete` edge function; the `user_points` first-pass guard. |
+| **Toolkit (this repo)** | The `useFgnAcademyProgress(courseId)` hook in the vendored Player; the `reportProgress(state)` callsite in the Step 7 route component (v0 stub, v0.3 wires it). |
+
+### Lovable Migration #1 — schema additions
+
+Lands in stratify-workforce as a single migration alongside this v0 work:
+
+1. **`skill_credentials` enrichment** — add nullable columns:
+   - `course_id uuid` (references `scorm_courses.id`)
+   - `module_id uuid`, `lesson_id uuid` (forward-compat for native course progress; nullable for SCORM session credentials)
+   - `source text` (enum-like: `'challenge_completion' | 'scorm_session' | ...`)
+   - `xp_earned integer`, `attempts integer default 1`, `duration_seconds integer`
+2. **Partial unique index** — `skill_credentials_scorm_session_unique ON skill_credentials (passport_id, course_id) WHERE source = 'scorm_session'`. Enforces one credential row per (learner, SCORM course) regardless of attempt count.
+3. **New `scorm_course_progress` table** — keyed on `(user_id, course_id)`:
+   - `suspend_data text` (SCORM 1.2 cmi.suspend_data; up to 4096 bytes per spec)
+   - `lesson_status text` (`'not attempted' | 'incomplete' | 'completed' | 'passed' | 'failed' | 'browsed'`)
+   - `lesson_location text` (resume bookmark)
+   - `score_raw numeric` (0–100)
+   - `total_time_seconds integer` (cumulative across attempts)
+   - `attempts integer default 0`
+   - `last_session_id uuid`
+   - `created_at`, `updated_at` standard
+
+### Inbound contract — what the Player hook POSTs
+
+```jsonc
+POST /functions/v1/scorm-session-complete
+Authorization: Bearer <user JWT>
+
+{
+  "courseId": "<scorm_courses.id>",
+  "sessionId": "<uuid generated client-side per launch>",
+  "lessonStatus": "passed",          // SCORM 1.2 cmi.core.lesson_status
+  "lessonLocation": "page-7",        // SCORM 1.2 cmi.core.lesson_location
+  "scoreRaw": 87,                    // 0-100; null if no quiz in course
+  "passingThreshold": 80,            // from CourseManifest.passingThreshold; null if no quiz
+  "totalTimeSeconds": 1240,          // cumulative session time
+  "scormSuspendData": "...",         // SCORM 1.2 cmi.suspend_data; up to 4KB
+  "passed": true                     // derived: scoreRaw >= passingThreshold (or always true if no quiz)
+}
+```
+
+The hook fires on every meaningful state change (lesson complete, quiz submitted, suspend on unload). Idempotency is server-side — the function dedupes on `(user_id, course_id, sessionId)` for the credential write but always upserts progress.
+
+### Outbound contract — what `scorm-session-complete` writes
+
+Lovable's edge function performs **two writes always, one write conditionally**:
+
+1. **`scorm_course_progress` UPSERT (always)** — keyed on `(user_id, course_id)`. Stores resume state, latest lesson_status, latest lesson_location, max(score_raw), sum(total_time_seconds across attempts), incremented attempts counter, last_session_id. This is the resume-state target the Player reads on mount.
+
+2. **`skill_credentials` UPSERT (only when `passed === true && scoreRaw >= passingThreshold`)** — relies on the partial unique index `(passport_id, course_id) WHERE source = 'scorm_session'`. On conflict: keep best-of `xp_earned` and `score_raw`, increment `attempts`, do NOT re-award XP. On insert: create new credential row, set `source = 'scorm_session'`.
+
+3. **`user_points` insert (guarded, first-pass only)** — only on the INSERT branch of #2 (i.e., the learner's first passing attempt). Prevents XP re-award on subsequent re-attempts. Amount comes from the xp walk-back: `lessons.xp_reward → work_orders.xp_reward → 100` default.
+
+### Resolved questions (the five that were open)
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | How does the function find `passport_id` from `userId`? | **Create-if-missing** pattern, matching the existing `sync-challenge-completion` edge function. Function looks up `skill_passports.user_id`; if absent, INSERT with default values, then proceed. |
+| 2 | How is `skills_verified` derived for the credential? | **Function-side rollup via SQL JOIN** through `scorm_courses → work_orders → lessons` to collect skills tagged on the source content. No new column on `scorm_courses`; the rollup happens at write time. |
+| 3 | Where does `xp_earned` come from? | **Walk-back chain:** `lessons.xp_reward → work_orders.xp_reward → 100` default. First non-null wins. Same pattern as challenge completion. |
+| 4 | How is multi-attempt idempotency enforced? | **Partial unique index** `(passport_id, course_id) WHERE source = 'scorm_session'` + UPSERT semantics. Best-of score, attempts++, no XP re-award. One credential row per (learner, course) regardless of attempts. |
+| 5 | Where does `scormSuspendData` go? | **`scorm_course_progress` table** (new, in Migration #1). Keyed on `(user_id, course_id)`. The Player reads this on mount to restore resume state and writes it on suspend/state-change. |
+
+### Toolkit-side commitments
+
+When v0.3 lands, the toolkit-side work is bounded:
+
+1. Replace the `reportProgress(state)` no-op stub on the Step 7 route component with a real `useFgnAcademyProgress(courseId)` hook.
+2. Hook POSTs the inbound shape above to `/functions/v1/scorm-session-complete` with the user's session JWT.
+3. Hook reads `scorm_course_progress` on mount to restore resume state into the Player (cmi.suspend_data, cmi.core.lesson_location).
+4. No changes to the toolkit's `transform()` / `enhance()` / `pack()` — the contract is purely in the Player layer.
+
+This means v0 Step 7 can ship the route with the `reportProgress` callsite already in the right place, and v0.3 is a contained ~3-5-day swap of the no-op for the real hook.
 
 ---
 
