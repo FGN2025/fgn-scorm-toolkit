@@ -3,7 +3,7 @@
  *
  * Phase 2 v0 spec: docs/PHASE_2_SPEC.md in the FGN SCORM toolkit repo.
  *
- * STATUS: Step 4 -- transform + storage + DB upsert wired in.
+ * STATUS: Step 4.5 -- transform + storage + DB upsert + ZIP packaging.
  *
  * What this function does:
  *   - Validates the request shape (workOrderId UUID, destination /
@@ -27,9 +27,19 @@
  *   - Returns { courseId, manifestUrl, zipUrl: null, playerUrl,
  *     workOrderUrl, coverImageUrl, title, isReplacement, warnings }
  *
+ * Step 4.5 ZIP packaging notes:
+ *   - Uses redirect-style ZIP (index.html redirects to fgn.academy
+ *     native player) rather than self-contained. Avoids needing to
+ *     bundle the ~1MB compiled @fgn/scorm-player HTML into every
+ *     build. Trade-off: SCORM API progress tracking doesn't work
+ *     cross-origin; LMS sees content but can't track lesson progress
+ *     through the standard SCORM API. Phase 2.x adds a self-contained
+ *     ZIP variant for full SCORM 1.2 conformance.
+ *   - ZIP packaging failure is non-fatal: the course is still
+ *     published, the native player still works, only the download
+ *     button on external destinations is unavailable.
+ *
  * Not yet wired -- coming in subsequent steps:
- *   - Step 4.5: packageCourse() into a downloadable ZIP. Requires
- *     vendored or storage-hosted scorm-player HTML + brand SVGs.
  *   - Step 5: enhance() text slots (description / briefingHtml /
  *     quizQuestions) when enhanceText=true. Anthropic key required.
  *   - Step 6: enhance() coverImage slot when enhanceCover=true.
@@ -45,6 +55,7 @@ import {
   createSupabaseFetcher,
   type SupabaseLike,
 } from './_lib/scorm-builder/fetcher.ts';
+import { packageCourse } from './_lib/scorm-builder/pack.ts';
 import type { ScormDestination } from './_lib/brand-tokens.ts';
 
 const corsHeaders = {
@@ -112,6 +123,81 @@ const UUID_RE =
 function isUuid(s: string): boolean {
   return UUID_RE.test(s);
 }
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Phase 2 v0 step 4.5 -- redirect-style index.html for the SCORM ZIP.
+ *
+ * When an LMS opens this page in its iframe, JS replaces the location
+ * with the fgn.academy native player URL. The player loads the
+ * manifest + assets from fgn.academy storage and renders the course.
+ *
+ * Trade-off: SCORM API progress tracking doesn't work cross-origin.
+ * The LMS sees content but can't track lesson progress. Phase 2.x
+ * adds a self-contained ZIP variant that bundles the player HTML for
+ * full SCORM API conformance.
+ *
+ * For v0 destinations:
+ *   - fgn-academy: ZIP unused (Learning Resource card uses native player)
+ *   - broadbandworkforce / simu-cdl-path / external-lms: ZIP works
+ *     for content delivery; progress tracking limited
+ */
+function buildRedirectIndexHtml(courseId: string, courseTitle: string): string {
+  const safeTitle = escapeHtml(courseTitle);
+  const launchUrl = `https://fgn.academy/scorm-player/${courseId}/launch`;
+  const safeUrl = escapeHtml(launchUrl);
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    `<title>${safeTitle}</title>`,
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<style>',
+    '  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #0B0F14; background: #F6F8FB; }',
+    '  .center { max-width: 480px; margin: 4rem auto; text-align: center; }',
+    '  a.cta { display: inline-block; margin-top: 1rem; padding: 0.75rem 1.5rem; background: #00D4D4; color: #0B0F14; text-decoration: none; border-radius: 8px; font-weight: 600; }',
+    '</style>',
+    '<script>',
+    `  window.location.replace(${JSON.stringify(launchUrl)});`,
+    '</script>',
+    '</head>',
+    '<body>',
+    '<div class="center">',
+    `  <h1>${safeTitle}</h1>`,
+    '  <p>Loading your FGN course...</p>',
+    `  <p>If you are not redirected automatically, <a class="cta" href="${safeUrl}">click here to launch</a>.</p>`,
+    '</div>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+}
+
+/**
+ * Phase 2 v0 step 4.5 -- minimal placeholder SVGs for the brand
+ * wordmarks. The toolkit's packageCourse() requires both white and
+ * ink wordmarks because the SCORM Player references them via relative
+ * URL. The redirect ZIP never renders the player, so these are dead
+ * files inside the ZIP. Tiny stubs keep the manifest valid without
+ * bundling real brand assets.
+ *
+ * Real brand SVGs live in @fgn/brand-tokens/assets/ in the toolkit
+ * repo and will replace these stubs when v0.x adds self-contained
+ * ZIP packaging.
+ */
+const PLACEHOLDER_WHITE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 24"><rect width="100" height="24" fill="#0B0F14"/><text x="50" y="16" text-anchor="middle" fill="#F6F8FB" font-family="sans-serif" font-size="12" font-weight="700">FGN</text></svg>';
+
+const PLACEHOLDER_INK_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 24"><rect width="100" height="24" fill="#F6F8FB"/><text x="50" y="16" text-anchor="middle" fill="#0B0F14" font-family="sans-serif" font-size="12" font-weight="700">FGN</text></svg>';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -446,10 +532,81 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------------------
-    // 14. Return success payload. playerUrl is only meaningful for
+    // 14. Phase 2 v0 step 4.5 -- package the SCORM ZIP for download.
+    //     Uses the redirect-ZIP pattern: index.html redirects to the
+    //     fgn.academy native player URL. Trade-off: SCORM API progress
+    //     tracking doesn't work cross-origin, but content delivery
+    //     does, and we avoid having to host the ~1MB compiled player
+    //     HTML somewhere accessible to every build invocation.
+    //     v0.x will add a self-contained ZIP variant.
+    //
+    //     ZIP packaging failure is non-fatal: course is published,
+    //     native player works, only the download button is missing.
+    // --------------------------------------------------------------
+    let zipUrl: string | null = null;
+    const packagingWarnings: typeof transformWarnings = [];
+
+    try {
+      const redirectHtml = buildRedirectIndexHtml(courseId, courseManifest.title);
+      const packageResult = await packageCourse({
+        course: courseManifest,
+        playerHtml: redirectHtml,
+        brandAssets: {
+          whiteSvg: PLACEHOLDER_WHITE_SVG,
+          inkSvg: PLACEHOLDER_INK_SVG,
+        },
+        media: assets.map((a) => ({ path: a.path, content: a.bytes })),
+      });
+
+      const zipPath = `scorm-bundles/${courseId}.zip`;
+      const { error: zipUploadErr } = await adminSupabase.storage
+        .from('media-assets')
+        .upload(zipPath, packageResult.zip, {
+          contentType: 'application/zip',
+          upsert: true,
+          cacheControl: 'no-cache',
+        });
+
+      if (zipUploadErr) {
+        packagingWarnings.push({
+          level: 'warn',
+          code: 'ZIP_UPLOAD_FAILED',
+          message: `Failed to upload SCORM ZIP: ${zipUploadErr.message}. Course is published; native player works; ZIP download not available.`,
+        });
+      } else {
+        const { data: zipPub } = adminSupabase.storage
+          .from('media-assets')
+          .getPublicUrl(zipPath);
+        zipUrl = zipPub.publicUrl;
+
+        // Update the row with the zip_url. Don't fail the whole
+        // build if this update errors -- the artifact is in storage,
+        // we just couldn't link it to the row.
+        const { error: zipRowErr } = await adminSupabase
+          .from('scorm_courses')
+          .update({ zip_url: zipUrl })
+          .eq('id', courseId);
+        if (zipRowErr) {
+          packagingWarnings.push({
+            level: 'warn',
+            code: 'ZIP_ROW_UPDATE_FAILED',
+            message: `ZIP uploaded but scorm_courses.zip_url stamp failed: ${zipRowErr.message}.`,
+          });
+        }
+      }
+    } catch (err) {
+      packagingWarnings.push({
+        level: 'warn',
+        code: 'ZIP_PACKAGE_FAILED',
+        message: `SCORM packaging failed: ${err instanceof Error ? err.message : String(err)}. Course is published; ZIP download not available.`,
+      });
+    }
+
+    // --------------------------------------------------------------
+    // 15. Return success payload. playerUrl is only meaningful for
     //     fgn-academy destination (where the native /scorm-player/
     //     route renders the course); external destinations rely on
-    //     the (future) zipUrl for download distribution.
+    //     zipUrl for download distribution.
     // --------------------------------------------------------------
     const playerUrl =
       body.destination === 'fgn-academy'
@@ -461,13 +618,13 @@ Deno.serve(async (req) => {
       status: 'ok',
       courseId,
       manifestUrl,
-      zipUrl: null, // Step 4.5 will populate after wiring packageCourse()
+      zipUrl,
       playerUrl,
       workOrderUrl,
       coverImageUrl: absoluteCoverUrl,
       title: courseManifest.title,
       isReplacement: existing !== null && existing !== undefined,
-      warnings: transformWarnings,
+      warnings: [...transformWarnings, ...packagingWarnings],
     });
   } catch (err) {
     console.error('scorm-build unexpected error:', err);
