@@ -21,6 +21,7 @@
  */
 
 import OpenAI from 'https://esm.sh/openai@4.95.0';
+import { Buffer } from 'node:buffer';
 
 export type ImageQuality = 'low' | 'medium' | 'high';
 export type ImageSize = '1024x1024' | '1024x1536' | '1536x1024';
