@@ -485,7 +485,7 @@ Deno.serve(async (req) => {
                     ...(body.imageModel ? { model: body.imageModel } : {}),
                   },
                   imageQuality: (body.imageQuality ?? 'medium') as ImageQuality,
-                  imageSize: (body.imageSize ?? '1024x1024') as ImageSize,
+                  imageSize: (body.imageSize ?? '1536x1024') as ImageSize,
                 }
               : {}),
             // uploadToAcademy intentionally omitted -- existing asset
