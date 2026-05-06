@@ -57,6 +57,11 @@ import {
 } from './_lib/scorm-builder/fetcher.ts';
 import { packageCourse } from './_lib/scorm-builder/pack.ts';
 import type { ScormDestination } from './_lib/brand-tokens.ts';
+import { enhanceCourse } from './_lib/course-enhancer/enhance.ts';
+import type {
+  ImageQuality,
+  ImageSize,
+} from './_lib/course-enhancer/openai-client.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -406,8 +411,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const courseManifest = transformResult.course;
-    const assets = transformResult.assets;
+    // courseManifest and assets are reassigned in the enhancement
+    // block below when enhanceText / enhanceCover are set, so they
+    // need to be `let` rather than `const`.
+    let courseManifest = transformResult.course;
+    let assets = transformResult.assets;
     const transformWarnings = transformResult.warnings;
 
     // Block on error-level warnings (e.g., COVER_IMAGE_FETCH_FAILED is
@@ -418,6 +426,83 @@ Deno.serve(async (req) => {
       return jsonError(400, 'transform produced blocking warnings', {
         warnings: blockingWarnings,
       });
+    }
+
+    // --------------------------------------------------------------
+    // 9.5 Optional AI enhancement (Steps 5+6).
+    //     Single call to enhanceCourse with whatever slots the body
+    //     opts into. Per-slot failures are non-fatal -- the enhancer
+    //     keeps the template-derived field and emits a warning. Image
+    //     bytes returned in result.assets are appended to the assets
+    //     array and land in the existing asset-upload loop below; we
+    //     intentionally do NOT pass uploadToAcademy=true because the
+    //     edge function already writes to media-assets via the service
+    //     role (the vendored academy-uploader is a stub for this very
+    //     reason).
+    // --------------------------------------------------------------
+    const enhanceWarnings: typeof transformWarnings = [];
+    const wantsText = body.enhanceText === true;
+    const wantsCover = body.enhanceCover === true;
+
+    if (wantsText || wantsCover) {
+      const anthropicKey = wantsText ? Deno.env.get('ANTHROPIC_API_KEY') : undefined;
+      const openaiKey = wantsCover ? Deno.env.get('OPENAI_API_KEY') : undefined;
+
+      if (wantsText && !anthropicKey) {
+        enhanceWarnings.push({
+          level: 'warn',
+          code: 'ENHANCER_KEY_MISSING',
+          message:
+            'enhanceText=true but ANTHROPIC_API_KEY not in edge env. Skipping text enhancement.',
+        });
+      }
+      if (wantsCover && !openaiKey) {
+        enhanceWarnings.push({
+          level: 'warn',
+          code: 'ENHANCER_IMAGE_KEY_MISSING',
+          message:
+            'enhanceCover=true but OPENAI_API_KEY not in edge env. Skipping cover enhancement.',
+        });
+      }
+
+      const slots: ('description' | 'briefingHtml' | 'quizQuestions' | 'coverImage')[] = [];
+      if (wantsText && anthropicKey) {
+        slots.push('description', 'briefingHtml', 'quizQuestions');
+      }
+      if (wantsCover && openaiKey) {
+        slots.push('coverImage');
+      }
+
+      if (slots.length > 0) {
+        try {
+          const result = await enhanceCourse(courseManifest, {
+            slots,
+            ...(anthropicKey ? { apiKey: anthropicKey } : {}),
+            ...(openaiKey
+              ? {
+                  openai: {
+                    apiKey: openaiKey,
+                    ...(body.imageModel ? { model: body.imageModel } : {}),
+                  },
+                  imageQuality: (body.imageQuality ?? 'medium') as ImageQuality,
+                  imageSize: (body.imageSize ?? '1024x1024') as ImageSize,
+                }
+              : {}),
+            // uploadToAcademy intentionally omitted -- existing asset
+            // upload loop below handles cover storage. The vendored
+            // academy-uploader.ts is a stub.
+          });
+          courseManifest = result.course;
+          assets = [...assets, ...result.assets];
+          enhanceWarnings.push(...result.warnings);
+        } catch (err) {
+          enhanceWarnings.push({
+            level: 'warn',
+            code: 'ENHANCER_FAILED',
+            message: `AI enhancement threw: ${err instanceof Error ? err.message : String(err)}. Course is published with template-derived fields.`,
+          });
+        }
+      }
     }
 
     // --------------------------------------------------------------
@@ -624,7 +709,7 @@ Deno.serve(async (req) => {
       coverImageUrl: absoluteCoverUrl,
       title: courseManifest.title,
       isReplacement: existing !== null && existing !== undefined,
-      warnings: [...transformWarnings, ...packagingWarnings],
+      warnings: [...transformWarnings, ...enhanceWarnings, ...packagingWarnings],
     });
   } catch (err) {
     console.error('scorm-build unexpected error:', err);
