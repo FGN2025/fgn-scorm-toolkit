@@ -191,3 +191,75 @@ Items implicitly resolved by this addendum (status table above is from session-l
 Three items still open before v0 ships: Steps 5+6 wiring (this section's plan), Brand Reviewer signoff (gated on Step 6), and the post-deploy verification of `701bf20` against a CS Fiber WO.
 
 — End of addendum —
+
+---
+
+## Post-deploy verification — Steps 5+6 + inferFramework (2026-05-06, same day)
+
+Smoke matrix executed against the live edge function via authenticated browser session (super_admin JWT) calling the function URL directly. Bypassed the Course Builder UI because the UI was already validated in the original smoke session and the function-level assertions are what's under test for Steps 5+6.
+
+### Toolkit + deploy state at smoke time
+
+- Toolkit HEAD: `4735ee8` (Buffer fix layered on top of `e1aa92f`)
+- Stratify-workforce deploy: `ed21545` (single-file Buffer fix on top of `67ad9b7`)
+- Lovable redeployed `scorm-build` edge function twice during the session: once for the initial Steps 5+6 propagation, again after the Buffer bug surfaced
+
+### Smoke matrix outcome — primary target WO `82352214-8f05-411a-8f1d-75b4e86649a5` (RC Site: Flood Damage Assessment, Roadcraft)
+
+| # | enhanceText | enhanceCover | Status | Elapsed | Verdict |
+|---|---|---|---|---|---|
+| 1 | false | false | ✅ PASS | 7.1s (cold boot) | Baseline locked. `aiEnhanced: null`, no warnings, passthrough JPG cover. |
+| 2 | true | false | ✅ PASS | 21.1s | `aiEnhanced.model: claude-opus-4-7`, `enhancedFields: [description, briefingHtml]`. Description 0→270 chars; briefing 1125→1892 chars. No `quizQuestions` because Roadcraft classifies as CDL → no quiz module emitted. |
+| 3 | false | true | 🟡→✅ FAIL→PASS | 52.3s (both attempts) | First attempt surfaced `ENHANCER_IMAGE_FAILED: "Buffer is not defined"` — Deno gotcha (no global `Buffer`). Per-slot try/catch + `ENHANCER_NO_OUTPUT` aggregated correctly; function still 200 with passthrough cover. Fixed at `4735ee8` (added `import { Buffer } from 'node:buffer'`). After re-deploy: `aiEnhanced.model: gpt-image-2`, `enhancedFields: [coverImage]`, `cover.png` written at 2,474,176 bytes. **Brand reviewer signoff received on cell 3 cover.** |
+| 4 | true | true | ✅ PASS | 70.7s | Single combined `aiEnhanced` stamp: `enhancedFields: [description, briefingHtml, coverImage]`. No double-stamp. Description 0→267 chars; briefing 1125→1970 chars. Fresh `cover.png` at 2,451,408 bytes (slightly different bytes from cell 3 — image cache is per-prompt, not strictly idempotent across runs). |
+
+WO `82352214-…` has divergent `source_challenge_id` (`07c7b8c1-…`) vs `fgn_origin_challenge_id` (`48b739d9-…`); cell 1's clean build implicitly validates the `d447fe4` `??` preference fix is live.
+
+### inferFramework regression check — secondary target WO `fbc3b71e-e904-437f-af80-9910d8a9ebbd` (CS Fiber: Conduit Placement and Backfill)
+
+| # | enhanceText | enhanceCover | Status | Elapsed | Verdict |
+|---|---|---|---|---|---|
+| 5 | false | false | ✅ PASS | 7.8s | `credentialFramework: "TIRAP"` (was `"CDL"` pre-`701bf20`), modules `[briefing, quiz, completion]` (was `[briefing, completion]` pre-fix). `QUIZ_PLACEHOLDER_NEEDS_AUTHORING` warning fires correctly. **inferFramework reorder verified live in vendored `_lib/`.** |
+
+### Bonus signal — graceful degradation contract works
+
+Cell 3's pre-fix run is the canonical proof that the Steps 5+6 wiring degrades correctly:
+
+1. gpt-image-2 client threw `Buffer is not defined`
+2. `runImageSlot`'s per-slot try/catch caught it, pushed `ENHANCER_IMAGE_FAILED` warning
+3. `enhanceCourse` aggregated zero successful slots → pushed `ENHANCER_NO_OUTPUT` warning
+4. Edge function received the result, merged warnings into the response
+5. Function still returned 200 with passthrough cover and template-derived text
+6. Course shipped publishable, just without AI enhancement
+
+This is the failure mode the warning codes were designed for. Working as intended.
+
+### Deploy issues encountered (not bugs in the wiring itself)
+
+- **Pre-Buffer-fix cells 2/3 first run** silently hit pre-`48779fa` code — Lovable's first redeploy didn't propagate. Resolved by hard redeploy.
+- **Buffer-undefined** in vendored `openai-client.ts` — toolkit error, not a deploy issue. Caught by smoke as designed; per-slot graceful degradation; fixed and re-deployed.
+- **JWT expiry** at the 60-min mark mid-smoke — refreshed via stored `refresh_token` against `auth/v1/token?grant_type=refresh_token`. Operational note for future long smoke sessions.
+
+### v0 ship-gate status — final
+
+| Item | State |
+|---|---|
+| Migration applied | ✅ |
+| Edge function — `fgn-academy` destination | ✅ end-to-end (cell 1) |
+| Edge function — other 3 destinations | ✅ (smoked by Lovable pre-Steps-5/6 against same WO) |
+| AI text enhancement (Step 5) | ✅ (cell 2) |
+| AI cover regeneration (Step 6) | ✅ (cell 3 post Buffer fix) |
+| Combined enhancement | ✅ (cell 4) |
+| Course Builder page | ✅ |
+| Sidebar nav entry | ✅ |
+| WO admin button entry | ✅ |
+| Learning Resource card on WO page | ✅ |
+| SCORM Player loads + renders | ✅ |
+| ZIP download | ✅ |
+| Regenerate replaces (upsert on `(work_order_id, destination)`) | ✅ |
+| Brand reviewer signoff | ✅ (cell 3 cover passed visual assessment) |
+| `inferFramework()` TIRAP fix live | ✅ (cell 5) |
+
+**v0 cleared to ship.**
+
+— End of post-deploy verification —
