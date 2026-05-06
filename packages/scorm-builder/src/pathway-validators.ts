@@ -135,12 +135,16 @@ function validateMixedFrameworks(challenges: FetchedChallenge[]): CourseWarning[
  */
 export function inferFramework(c: FetchedChallenge): string | undefined {
   const name = c.challenge.name.toLowerCase();
-  if (c.challenge.cdl_domain) return 'CDL';
+  // Explicit name prefixes are strong intentional signals and take
+  // precedence over generic field-presence checks. cdl_domain can
+  // appear as residual cross-tagged metadata on Fiber challenges, so
+  // checking it first misclassifies "CS Fiber:" as CDL.
   if (name.startsWith('cs fiber') || name.startsWith('rc fiber')) return 'TIRAP';
-  if (name.includes('osha')) return 'OSHA';
-  if (name.includes('nccer')) return 'NCCER';
   if (name.startsWith('fs') || name.includes('agskill') || name.includes('farming')) return 'USDA';
   if (name.includes('optic')) return 'OpTIC Path';
+  if (name.includes('nccer')) return 'NCCER';
+  if (name.includes('osha')) return 'OSHA';
+  if (c.challenge.cdl_domain) return 'CDL';
   if (c.challenge.cfr_reference) return 'OSHA';
   return undefined;
 }
