@@ -625,6 +625,60 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------------------
+    // 9.4 v0.1 manual text overrides -- validate + apply pre-enhance.
+    //     Validation runs against manifest module ids (post-transform)
+    //     so cross-reference checks work. All issues aggregate into a
+    //     single OVERRIDE_VALIDATION 400 per the locked v0.1 contract.
+    //     See PHASE_2_SPEC.md §"v0.1 coordination contract".
+    // --------------------------------------------------------------
+    const validationIssues = validateOverrides(body, courseManifest.modules);
+    if (validationIssues.length > 0) {
+      return jsonError(400, 'override validation failed', {
+        code: 'OVERRIDE_VALIDATION',
+        issues: validationIssues,
+      });
+    }
+
+    // Apply title/description overrides to the manifest. These work
+    // identically on dryRun and publish phases.
+    if (body.title !== undefined) {
+      courseManifest.title = body.title;
+    }
+    if (body.description !== undefined) {
+      courseManifest.description = body.description;
+    }
+
+    // Apply briefingHtml overrides. (HTML sanitization with allowlist
+    // + BRIEFING_HTML_SANITIZED warning emission added in step 6.)
+    if (body.briefingHtml) {
+      for (const [moduleId, html] of Object.entries(body.briefingHtml)) {
+        const mod = courseManifest.modules.find((m) => m.id === moduleId);
+        if (mod && mod.type === 'briefing') {
+          mod.html = html;
+        }
+      }
+    }
+
+    // Apply quizQuestions overrides (full-array replacement, validated).
+    if (body.quizQuestions) {
+      for (const [moduleId, questions] of Object.entries(body.quizQuestions)) {
+        const mod = courseManifest.modules.find((m) => m.id === moduleId);
+        if (mod && mod.type === 'quiz') {
+          mod.questions = questions;
+        }
+      }
+    }
+
+    // Module ids that are skipped during enhance (per-module skip,
+    // course-level description handled via the slots filter below).
+    const overrideBriefingIds = Object.keys(body.briefingHtml ?? {});
+    const overrideQuizIds = Object.keys(body.quizQuestions ?? {});
+    const skipModuleIds = new Set<string>([
+      ...overrideBriefingIds,
+      ...overrideQuizIds,
+    ]);
+
+    // --------------------------------------------------------------
     // 9.5 Optional AI enhancement (Steps 5+6).
     //     Single call to enhanceCourse with whatever slots the body
     //     opts into. Per-slot failures are non-fatal -- the enhancer
@@ -663,7 +717,13 @@ Deno.serve(async (req) => {
 
       const slots: ('description' | 'briefingHtml' | 'quizQuestions' | 'coverImage')[] = [];
       if (wantsText && anthropicKey) {
-        slots.push('description', 'briefingHtml', 'quizQuestions');
+        // v0.1: course-level description slot is filtered out when
+        // admin provided an override (no module-id granularity here;
+        // it's a course-scope field).
+        if (body.description === undefined) slots.push('description');
+        // briefingHtml + quizQuestions slots stay; per-module skipping
+        // is via skipModuleIds passed to enhanceCourse below.
+        slots.push('briefingHtml', 'quizQuestions');
       }
       if (wantsCover && openaiKey) {
         slots.push('coverImage');
@@ -673,6 +733,7 @@ Deno.serve(async (req) => {
         try {
           const result = await enhanceCourse(courseManifest, {
             slots,
+            ...(skipModuleIds.size > 0 ? { skipModuleIds } : {}),
             ...(anthropicKey ? { apiKey: anthropicKey } : {}),
             ...(openaiKey
               ? {
