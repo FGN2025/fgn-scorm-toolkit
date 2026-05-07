@@ -818,7 +818,7 @@ This means v0 Step 7 can ship the route with the `reportProgress` callsite alrea
 
 ## v0.1 coordination contract — manual text override
 
-**Status:** DRAFT 2026-05-07 by toolkit (Claude/Darcy); pending Lovable review and lock when v0.3 ships. Both sides build to this shape once locked; v0.1 ships when toolkit's `dryRun` flag + override fields land and Lovable's Course Builder UI exposes the preview-edit-publish flow.
+**Status:** DRAFT 2026-05-07 by toolkit (Claude/Darcy); pending Lovable line-level review and lock. v0.3 has shipped — toolkit is unblocked to start v0.1 implementation as soon as this contract locks. Both sides build to this shape once locked.
 
 **Why this section exists:** v0 admins have a binary "regenerate or publish" choice when AI text isn't quite right — there's no preview-and-edit step between `enhanceText: true` and a written-to-storage manifest. v0.1 unlocks that loop: admin sees the AI output, edits inline, then publishes the edited version. Adds admin trust in AI text without unlocking the full v0.6 draft/publish workflow.
 
@@ -872,7 +872,11 @@ interface BuildRequest {
 
 `title?` and `description?` are existing override fields that already work; v0.1 reuses them as-is for the course-level overrides. `briefingHtml` and `quizQuestions` are the new module-level keyed overrides.
 
-### Inbound contract — preview phase
+**All override fields (`title`, `description`, `briefingHtml`, `quizQuestions`) work identically on `dryRun: true` and `dryRun: false`** — they're applied to the manifest before enhance runs in both phases. Preview = same processing as publish, minus the persist phase. This lets admins iterate (preview → edit → re-preview-with-edits-applied → edit → publish) without contract surprises between the two states.
+
+### Inbound contract — preview phase (initial, no overrides)
+
+First admin click on "Generate Preview" — pure AI run, no edits yet.
 
 ```jsonc
 POST /functions/v1/scorm-build
@@ -898,6 +902,33 @@ Authorization: Bearer <admin JWT>
 ```
 
 No `courseId`, no `manifestUrl`, no `zipUrl`, no `playerUrl` — nothing was persisted. The UI renders `manifest.description`, each briefing module's `html`, and each quiz module's `questions[]` into editable fields.
+
+### Inbound contract — preview phase (iterative, with admin edits applied)
+
+After admin edits one or more slots, they re-preview to see the merged result before publishing. Overrides are applied per-slot; non-overridden slots regenerate via enhance (cache-friendly per §"Resolved questions #5").
+
+```jsonc
+POST /functions/v1/scorm-build
+Authorization: Bearer <admin JWT>
+
+{
+  "workOrderId": "<work_orders.id>",
+  "destination": "fgn-academy",
+  "brandMode": "arcade",
+  "enhanceText": true,            // still on, for non-overridden slots
+  "dryRun": true,
+
+  // Admin's edits so far:
+  "description": "edited description",
+  "briefingHtml": {
+    "c-abc123-briefing": "<p>edited briefing #1</p>"
+    // briefing #2 NOT keyed here -> regenerates via enhance
+  }
+  // No quizQuestions key -> all quiz modules regenerate via enhance
+}
+```
+
+**Response shape identical to initial preview** (`{status: "preview", manifest, warnings}`) — but `manifest.description` and the briefing #1 HTML reflect admin's edits, while briefing #2 and all quizzes show the latest AI-rewritten output. Single coherent manifest, no flag indicating "this slot was overridden vs. enhanced" — Lovable tracks that client-side via the edit state.
 
 ### Inbound contract — publish phase (after admin edits)
 
@@ -943,21 +974,36 @@ Authorization: Bearer <admin JWT>
 
 For each slot (description, briefingHtml, quizQuestions), per module where applicable:
 
-1. **Override provided** → use override; skip enhance for this slot
-2. **Override NOT provided AND `enhanceText: true`** → run enhance for this slot
-3. **Override NOT provided AND `enhanceText: false`** → use template-derived output (existing v0 behavior)
+1. **Override provided (regardless of `enhanceText` flag)** → use override; that slot skips enhance entirely. Equivalent to setting `enhanceText: false` for that one slot.
+2. **Override NOT provided AND `enhanceText: true`** → run enhance for this slot.
+3. **Override NOT provided AND `enhanceText: false`** → use template-derived output (existing v0 behavior).
 
-This means admin can mix-and-match: edit the description, accept the AI-rewritten briefing, override one quiz module's questions while letting another regenerate. Per-slot granularity, no "all-or-nothing" lock-in.
+This means admin can mix-and-match: edit the description, accept the AI-rewritten briefing, override one quiz module's questions while letting another regenerate. Per-slot, per-module granularity. No "all-or-nothing" lock-in.
 
 ### Cover image in v0.1
 
-**Out of scope.** v0.1 is text-only. `enhanceCover` continues to work as in v0 (gpt-image-2 regenerates; admin can preview the cover via `dryRun` but cannot edit pixels). Manual cover upload is a separate feature path; defer to v0.x or beyond.
+**Out of scope; cover regen is publish-only, not preview.** v0.1 is text-only. `enhanceCover: true` continues to work as in v0 — gpt-image-2 regenerates the cover and writes it to storage during the **publish** phase. **`dryRun: true` does NOT trigger `enhanceCover`** even when both flags are set; the regen runs once on publish if requested. Rationale: gpt-image-2 is expensive (~$0.04-0.08/image, 30-60s latency) and admins iterating through preview cycles would burn tokens fast for no UX benefit (the cover doesn't depend on the text edits anyway). When admin clicks Publish, enhanceCover (if requested) runs and the regenerated cover lands in `media-assets/scorm-courses/<id>/assets/cover.png` as part of the persist phase. UI should show "Your cover will be regenerated when you publish" rather than a preview thumbnail. Manual cover upload is a separate feature path; defer to v0.x or beyond.
 
 ### Server-side validation rules
 
 - `briefingHtml[moduleId]` — must reference a module that exists in the manifest with `type: 'briefing'`; ≤ 8000 chars; DOMPurify-sanitizable (no `<script>`, `<iframe>`); non-empty after sanitization. 400 on violation.
-- `quizQuestions[moduleId]` — must reference a module with `type: 'quiz'`; non-empty array; each question has `id`, `prompt`, `type` ∈ {single-choice, multi-choice, true-false}, `choices` array with ≥ 2 entries; `single-choice` exactly one `correct: true`; `multi-choice` ≥ 1 `correct: true`; `true-false` exactly 2 choices. 400 on violation.
+- `quizQuestions[moduleId]` — must reference a module with `type: 'quiz'`; non-empty array; each question has `id`, `prompt`, `type` ∈ {single-choice, multi-choice, true-false}, `choices` array with ≥ 2 entries; `single-choice` exactly one `correct: true`; `multi-choice` ≥ 1 `correct: true`; **`true-false` exactly 2 choices, exactly 1 correct**. 400 on violation.
 - Unknown `moduleId` keys in either override map → 400 (better to fail loudly than silently ignore).
+
+**All override-field validation errors aggregate into a single 400 response** so the UI can highlight every malformed field at once instead of fix-one-discover-next. Body shape extends the locked 4xx contract from v0.3 with an optional `issues` array:
+
+```jsonc
+{
+  "error": "override validation failed",
+  "code": "OVERRIDE_VALIDATION",
+  "issues": [
+    { "path": "briefingHtml.c-abc-briefing", "message": "exceeds 8000 char cap (got 9420)" },
+    { "path": "quizQuestions.c-xyz-quiz[2].choices", "message": "single-choice requires exactly 1 correct, got 0" }
+  ]
+}
+```
+
+Other 4xx errors (auth, missing fields, etc.) keep the simpler `{error, code?}` shape; only `OVERRIDE_VALIDATION` carries `issues`.
 
 ### Resolved questions
 
@@ -975,13 +1021,13 @@ When v0.1 lands, the toolkit-side work is bounded:
 
 1. Add `dryRun?: boolean`, `briefingHtml?: Record<string, string>`, `quizQuestions?: Record<string, QuizQuestion[]>` to `BuildRequest` interface in `scorm-build/index.ts`.
 2. After `transform()` + before `enhanceCourse()`: apply briefingHtml/quizQuestions overrides to the manifest (mutate the matching `BriefingModule.html` / `QuizModule.questions`).
-3. Modify `enhanceCourse()` call to accept a `skipSlots: string[]` option (or filter the slots array client-side) so overridden slots don't get re-enhanced. This is a `course-enhancer/enhance.ts` API addition.
-4. Add validation for the new override fields before the transform call (return 400 with structured error on violation).
-5. If `dryRun: true`: return `{status: "preview", manifest, warnings}` and skip all storage / DB / ZIP packaging.
+3. Add a `skipModuleIds?: Set<string>` option to `enhanceCourse()` so overridden modules don't get re-enhanced **at the per-module level**. The existing `slots: EnhancedField[]` filter is course-level coarse-grained — setting `slots: ['briefingHtml']` runs the loop for ALL briefing modules; we need per-module skipping inside `runBriefingSlot` / `runQuizSlot`. The course-level `description` slot already has the right granularity via the existing `slots` filter (skip the slot entirely when overridden). ~5 lines per per-module slot-runner. Mirror to `_lib/course-enhancer/enhance.ts`.
+4. Add validation for the new override fields before the transform call. Return 400 with the aggregated `OVERRIDE_VALIDATION` shape (see §"Server-side validation rules") — accumulate ALL violations and emit one structured error response, never short-circuit on first failure.
+5. If `dryRun: true`: run transform + enhance (skipping overridden modules per #3) and return `{status: "preview", manifest, warnings}`. Skip all storage uploads, scorm_courses upsert, ZIP packaging. **Also skip enhanceCover entirely on dryRun** even when `enhanceCover: true` — gpt-image-2 only runs on publish.
 6. Mirror all changes to vendored `_lib/` copies.
-7. Smoke matrix additions to `PHASE_2_V0_SMOKE_TEST.md`: preview→publish happy path, partial override, full override (no enhance run at all), invalid override (validation 400).
+7. Smoke matrix additions to `PHASE_2_V0_SMOKE_TEST.md`: preview→publish happy path, iterative preview-with-edits, partial override, full override (no enhance run at all for text), `dryRun + enhanceCover` (cover does NOT regenerate), invalid override (aggregated 400 with multiple `issues`).
 
-Toolkit estimate: 2-3 days including smoke + doc updates. No `_lib/` parity changes beyond the new override-validation logic.
+Toolkit estimate: 2-3 days including smoke + doc updates. No `_lib/` parity changes beyond the new override-validation logic and the `skipModuleIds` option.
 
 ### Lovable-side commitments
 
