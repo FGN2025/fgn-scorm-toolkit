@@ -50,6 +50,7 @@
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import DOMPurify from 'npm:isomorphic-dompurify';
 import { transform } from './_lib/scorm-builder/transform.ts';
 import {
   createSupabaseFetcher,
@@ -63,6 +64,32 @@ import type {
   ImageSize,
 } from './_lib/course-enhancer/openai-client.ts';
 import type { QuizQuestion } from './_lib/course-types.ts';
+
+// v0.1 -- briefing HTML sanitization. Strict allowlist matching the
+// briefing prompt contract. Lovable also runs DOMPurify client-side
+// for preview render fidelity; this server-side pass is the
+// authoritative strip-and-strip-quietly per the locked v0.1 contract
+// (PHASE_2_SPEC.md §"HTML sanitization").
+const SANITIZE_ALLOWED_TAGS = ['p', 'strong', 'em', 'h3', 'ul', 'li'];
+const SANITIZE_ALLOWED_ATTR: string[] = [];
+
+function sanitizeBriefingHtml(html: string): {
+  sanitized: string;
+  didStrip: boolean;
+} {
+  const sanitized = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: SANITIZE_ALLOWED_TAGS,
+    ALLOWED_ATTR: SANITIZE_ALLOWED_ATTR,
+  });
+  // Length-shrink heuristic for didStrip. Conservative: false
+  // positives (warning fires when nothing meaningful changed) are
+  // safer than false negatives (admin doesn't realize content was
+  // stripped). DOMPurify normalization may shorten by a few bytes
+  // even on safe input but the warning is informational and easy to
+  // verify by re-previewing.
+  const didStrip = sanitized.length < html.length;
+  return { sanitized, didStrip };
+}
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -648,15 +675,45 @@ Deno.serve(async (req) => {
       courseManifest.description = body.description;
     }
 
-    // Apply briefingHtml overrides. (HTML sanitization with allowlist
-    // + BRIEFING_HTML_SANITIZED warning emission added in step 6.)
+    // Apply briefingHtml overrides with server-side sanitization.
+    // Strict allowlist <p, strong, em, h3, ul, li> with zero allowed
+    // attributes. Stripping is silent (no 400) but emits a non-blocking
+    // BRIEFING_HTML_SANITIZED warning per module so admin knows what
+    // changed. Post-sanitize empty -> 400 OVERRIDE_VALIDATION (matches
+    // the locked spec rule "non-empty after sanitization").
+    const sanitizationWarnings: Array<Record<string, unknown>> = [];
+    const sanitizationEmptyIssues: ValidationIssue[] = [];
     if (body.briefingHtml) {
       for (const [moduleId, html] of Object.entries(body.briefingHtml)) {
         const mod = courseManifest.modules.find((m) => m.id === moduleId);
         if (mod && mod.type === 'briefing') {
-          mod.html = html;
+          const { sanitized, didStrip } = sanitizeBriefingHtml(html);
+          if (sanitized.length === 0) {
+            sanitizationEmptyIssues.push({
+              path: `briefingHtml.${moduleId}`,
+              message:
+                'must be non-empty after sanitization (all content stripped by allowlist)',
+            });
+            continue;
+          }
+          mod.html = sanitized;
+          if (didStrip) {
+            sanitizationWarnings.push({
+              level: 'info',
+              code: 'BRIEFING_HTML_SANITIZED',
+              message:
+                'Stripped non-allowlisted content from briefing HTML override.',
+              moduleId,
+            });
+          }
         }
       }
+    }
+    if (sanitizationEmptyIssues.length > 0) {
+      return jsonError(400, 'override validation failed', {
+        code: 'OVERRIDE_VALIDATION',
+        issues: sanitizationEmptyIssues,
+      });
     }
 
     // Apply quizQuestions overrides (full-array replacement, validated).
@@ -780,7 +837,7 @@ Deno.serve(async (req) => {
       return jsonOk({
         status: 'preview',
         manifest: courseManifest,
-        warnings: [...transformWarnings, ...enhanceWarnings],
+        warnings: [...transformWarnings, ...enhanceWarnings, ...sanitizationWarnings],
       });
     }
 
@@ -988,7 +1045,7 @@ Deno.serve(async (req) => {
       coverImageUrl: absoluteCoverUrl,
       title: courseManifest.title,
       isReplacement: existing !== null && existing !== undefined,
-      warnings: [...transformWarnings, ...enhanceWarnings, ...packagingWarnings],
+      warnings: [...transformWarnings, ...enhanceWarnings, ...sanitizationWarnings, ...packagingWarnings],
     });
   } catch (err) {
     console.error('scorm-build unexpected error:', err);
