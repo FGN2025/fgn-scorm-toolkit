@@ -730,6 +730,29 @@ Content-Type: application/json
 | `score_raw` | Last-write-wins with the no-regress guard above. Server takes whatever client sends; the credential write uses max-of (kept on UPSERT conflict). |
 | `flush` | Client-side debounce-bypass signal for terminal events (course completion). Server ignores the field; treats the call identically to a debounced one. |
 
+**4xx response shape (locked 2026-05-07):**
+
+All 4xx responses follow a stable JSON shape so the hook can branch on a machine-readable code rather than string-matching the human message:
+
+```jsonc
+{
+  "error": "human-readable description",
+  "code": "STABLE_ERROR_CODE"   // optional but preferred
+}
+```
+
+The full `code` enum is documented in the curl-matrix PR body alongside Lovable's matrix output (TBD when the edge function lands). The committed 4xx scenarios are:
+
+| Scenario | Status | Notes |
+|---|---|---|
+| `session_time_seconds < 0` | 400 | "session_time_seconds must be >= 0" |
+| `session_time_seconds > 3600` | 400 | "session_time_seconds exceeds 3600s single-flush cap"; backfills > 1 hour go out-of-band |
+| `lesson_status` not in the 6-value enum | 400 | CHECK constraint surfacing as structured error |
+| Missing `session_id` | 400 | required field |
+| Valid payload but `passport_id` lookup fails (orphaned user) | 404 | distinct from 400; signal to client that auth is fine but the learner has no passport row yet (create-if-missing covers this on the happy path; 404 is the edge case where create itself fails) |
+
+The hook should retry on 5xx (transient) and surface 4xx to the host without retry (the request is malformed; retrying with the same body won't help). 401 and 403 also bypass retry — re-auth is the user's problem, not the hook's.
+
 **Hook-side retry semantics (locked 2026-05-07):**
 
 The hook tracks `lastFlushedTimeSeconds: number` in a ref. On every flush:
