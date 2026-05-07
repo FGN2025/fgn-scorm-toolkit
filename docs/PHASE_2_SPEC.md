@@ -698,24 +698,55 @@ Lands in stratify-workforce as a single migration alongside this v0 work:
 
 ### Inbound contract — what the Player hook POSTs
 
+> **Wire format refinement, 2026-05-06:** payload keys use `snake_case` to match Lovable's `scorm_course_progress` column names (one-to-one for `session_id` ↔ `last_session_id`, `scorm_suspend_data` ↔ `suspend_data`, etc.). The original camelCase example below was the conceptual contract; the on-the-wire shape is snake_case per Lovable's locked anchors. Toolkit Player exposes camelCase `ProgressState` to TS consumers; the host's `useFgnAcademyProgress` hook handles the casing translation in one place.
+
 ```jsonc
 POST /functions/v1/scorm-session-complete
 Authorization: Bearer <user JWT>
+Content-Type: application/json
 
 {
-  "courseId": "<scorm_courses.id>",
-  "sessionId": "<uuid generated client-side per launch>",
-  "lessonStatus": "passed",          // SCORM 1.2 cmi.core.lesson_status
-  "lessonLocation": "page-7",        // SCORM 1.2 cmi.core.lesson_location
-  "scoreRaw": 87,                    // 0-100; null if no quiz in course
-  "passingThreshold": 80,            // from CourseManifest.passingThreshold; null if no quiz
-  "totalTimeSeconds": 1240,          // cumulative session time
-  "scormSuspendData": "...",         // SCORM 1.2 cmi.suspend_data; up to 4KB
-  "passed": true                     // derived: scoreRaw >= passingThreshold (or always true if no quiz)
+  "course_id": "<scorm_courses.id>",
+  "session_id": "<UUID v4 generated client-side per Player mount>",
+  "lesson_status": "passed",         // SCORM 1.2 cmi.core.lesson_status (CHECK-constrained server-side)
+  "lesson_location": "3",            // SCORM 1.2 cmi.core.lesson_location (we use module position as string)
+  "score_raw": 87,                   // 0-100; null if no quiz in course
+  "passing_threshold": 80,           // from QuizModule.passThreshold; null if no quiz
+  "session_time_seconds": 1240,      // monotonic seconds since Player mount
+  "scorm_suspend_data": "{\"v\":1,...}",  // serialized ScormSuspendDataV1, ≤ 4096 bytes
+  "passed": true,                    // derived: scoreRaw >= passingThreshold (or true if no quiz)
+  "flush": true                      // OPTIONAL — terminal-event marker; client-side debounce skip; server ignores
 }
 ```
 
-The hook fires on every meaningful state change (lesson complete, quiz submitted, suspend on unload). Idempotency is server-side — the function dedupes on `(user_id, course_id, sessionId)` for the credential write but always upserts progress.
+**Locked anchors (2026-05-06, Lovable confirmation):**
+
+| Field | Behavior |
+|---|---|
+| `session_id` | Client-generated UUID v4, stable per Player mount. Server stores in `scorm_course_progress.last_session_id`. No server-issued session handshake. |
+| `session_time_seconds` | Monotonic seconds since Player mount. Server adds to `total_time_seconds` on every upsert. Pause/blur handling is the Player's call; server doesn't validate gaps. *(Note: cumulative-since-mount + server `+=` would double-count; Player should send delta-since-last-flush. Confirmed approach to be locked when hook lands.)* |
+| `scorm_suspend_data` | Stored as opaque text. Server 413s on > 4096 bytes (clear signal to clients). Position-keyed envelope (see `ScormSuspendDataV1` below) for ~10x density vs UUIDs. |
+| `lesson_status` | One of `not attempted | incomplete | completed | passed | failed | browsed`. CHECK-constrained server-side; non-conforming values return 400. |
+| `flush` | Client-side debounce-bypass signal for terminal events (course completion). Server ignores the field; treats the call identically to a debounced one. |
+
+**Suspend-data envelope (`ScormSuspendDataV1`):**
+
+```jsonc
+{
+  "v": 1,
+  "currentPosition": 3,              // module.position (1-based) of the current module
+  "completedPositions": [1, 2, 3],   // sorted list of completed module positions
+  "quizScores": {
+    "5": { "score": 87, "passed": true }   // keyed by quiz module position as string
+  }
+}
+```
+
+Position-keyed (vs UUID-keyed) because (a) ~10x byte density inside the 4KB cap and (b) survives course regenerate — module UUIDs may shift between rebuilds while positions are stable within a manifest version. The Player's restore-on-mount intersects positions against the freshly fetched manifest; positions not present (regen dropped a module) are silently dropped.
+
+**Client-side debounce policy:**
+
+The hook fires on every meaningful state change (lesson complete, quiz submitted, suspend on unload). To collapse bursty quiz-answer churn, the hook debounces at **2 seconds, trailing edge** by default. Terminal events (course completion, suspend on unload) bypass the debounce by sending `flush: true` so the credential write isn't gated on a trailing timer. The server is fully idempotent (UPSERT on `(user_id, course_id)` for progress; partial unique index gating the credential write; first-pass guard on `user_points`) but every call still costs auth verify + 2-3 RLS-checked writes — debounce trims wasteful traffic without affecting correctness.
 
 ### Outbound contract — what `scorm-session-complete` writes
 

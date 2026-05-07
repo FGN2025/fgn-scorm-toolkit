@@ -228,6 +228,42 @@ export interface ProgressState {
   quizScores: Record<string, { score: number; passed: boolean }>;
   challengeStates: Record<string, ChallengeState>;
   finalScore?: number;
+
+  // v0.3 contract fields (added 2026-05-06 for scorm-session-complete coordination).
+  // The host's useFgnAcademyProgress hook consumes these and maps to the
+  // snake_case wire format Lovable expects: session_id, session_time_seconds,
+  // lesson_status, lesson_location, score_raw, passing_threshold, passed,
+  // scorm_suspend_data. See docs/PHASE_2_SPEC.md §"v0.3 coordination contract".
+  /** Client-generated UUID v4, stable per Player mount. */
+  sessionId: string;
+  /** Monotonic seconds since Player mount. */
+  sessionTimeSeconds: number;
+  /** SCORM 1.2 cmi.core.lesson_status — derived from internal status. */
+  lessonStatus: ScormLessonStatus;
+  /** SCORM 1.2 cmi.core.lesson_location — currentModuleId or stable bookmark. */
+  lessonLocation: string | null;
+  /** Quiz score 0-100; null when course has no quiz module. */
+  scoreRaw: number | null;
+  /** Quiz passThreshold; null when course has no quiz module. */
+  passingThreshold: number | null;
+  /** Whether the learner has passed (scoreRaw >= passingThreshold, or true if no quiz). */
+  passed: boolean;
+  /** Serialized {v:1, currentPosition, completedPositions, quizScores} JSON, <= 4096 bytes. */
+  scormSuspendData: string;
+}
+
+/**
+ * Suspend-data envelope serialized into ProgressState.scormSuspendData.
+ * Stored as opaque text in scorm_course_progress.suspend_data (SCORM 1.2 cap
+ * 4096 bytes). Position-keyed for ~10x density vs UUIDs and for survival
+ * across course regenerates (UUIDs may shift; positions are stable within
+ * a manifest version).
+ */
+export interface ScormSuspendDataV1 {
+  v: 1;
+  currentPosition: number;
+  completedPositions: number[];
+  quizScores: Record<string, { score: number; passed: boolean }>;
 }
 
 export interface ChallengeState {
