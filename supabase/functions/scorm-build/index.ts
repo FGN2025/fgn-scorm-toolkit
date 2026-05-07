@@ -62,6 +62,7 @@ import type {
   ImageQuality,
   ImageSize,
 } from './_lib/course-enhancer/openai-client.ts';
+import type { QuizQuestion } from './_lib/course-types.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -106,6 +107,33 @@ interface BuildRequest {
   imageSize?: string;
   imageModel?: string;
   uploadCoverToAcademy?: boolean;
+
+  // v0.1 manual text override fields. See PHASE_2_SPEC.md §"v0.1
+  // coordination contract — manual text override".
+
+  /**
+   * If true, run transform + enhance and return the resulting
+   * CourseManifest in the response without writing to storage /
+   * scorm_courses / ZIP. Used by the Course Builder UI to show admin
+   * a preview before publish. Default: false.
+   */
+  dryRun?: boolean;
+
+  /**
+   * Per-module HTML overrides for briefing modules, keyed by module
+   * id. When provided, the override is sanitized server-side and
+   * applied to the manifest BEFORE enhance, and that module's id
+   * goes into the enhancer's skipModuleIds so it isn't regenerated.
+   */
+  briefingHtml?: Record<string, string>;
+
+  /**
+   * Per-module quiz question overrides, keyed by quiz module id.
+   * Each value is a complete replacement of the module's questions
+   * array (not a partial patch). Server validates QuizQuestion shape
+   * + id regex + uniqueness. Skipped during enhance for that module.
+   */
+  quizQuestions?: Record<string, QuizQuestion[]>;
 }
 
 function jsonError(status: number, message: string, extra?: Record<string, unknown>): Response {
