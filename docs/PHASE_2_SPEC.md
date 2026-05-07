@@ -818,7 +818,7 @@ This means v0 Step 7 can ship the route with the `reportProgress` callsite alrea
 
 ## v0.1 coordination contract — manual text override
 
-**Status:** DRAFT 2026-05-07 by toolkit (Claude/Darcy); pending Lovable line-level review and lock. v0.3 has shipped — toolkit is unblocked to start v0.1 implementation as soon as this contract locks. Both sides build to this shape once locked.
+**Status:** LOCKED 2026-05-07 between toolkit (Claude/Darcy) and Lovable. v0.3 has shipped; toolkit is unblocked to start v0.1 implementation. Both sides build to this shape.
 
 **Why this section exists:** v0 admins have a binary "regenerate or publish" choice when AI text isn't quite right — there's no preview-and-edit step between `enhanceText: true` and a written-to-storage manifest. v0.1 unlocks that loop: admin sees the AI output, edits inline, then publishes the edited version. Adds admin trust in AI text without unlocking the full v0.6 draft/publish workflow.
 
@@ -986,11 +986,23 @@ This means admin can mix-and-match: edit the description, accept the AI-rewritte
 
 ### Server-side validation rules
 
-- `briefingHtml[moduleId]` — must reference a module that exists in the manifest with `type: 'briefing'`; ≤ 8000 chars; DOMPurify-sanitizable (no `<script>`, `<iframe>`); non-empty after sanitization. 400 on violation.
-- `quizQuestions[moduleId]` — must reference a module with `type: 'quiz'`; non-empty array; each question has `id`, `prompt`, `type` ∈ {single-choice, multi-choice, true-false}, `choices` array with ≥ 2 entries; `single-choice` exactly one `correct: true`; `multi-choice` ≥ 1 `correct: true`; **`true-false` exactly 2 choices, exactly 1 correct**. 400 on violation.
+The contract distinguishes **shape validation** (wrong type / cardinality / format → 400 reject) from **content sanitization** (unsafe HTML → silent strip with non-blocking warning). Validation rejects loudly so the UI can highlight every error; sanitization makes safe and reports transparently so admins know what changed.
+
+#### Shape validation (400 on violation, aggregated)
+
+- `briefingHtml[moduleId]` — must reference a module that exists in the manifest with `type: 'briefing'`; ≤ 8000 chars; non-empty after sanitization. 400 on violation.
+- `quizQuestions[moduleId]` — must reference a module with `type: 'quiz'`; non-empty array; each question has:
+  - `id` — string matching `/^[A-Za-z0-9_-]+$/`, length 1–128. UUIDs pass, slugs pass; whitespace, control chars, and HTML-ish junk reject (would break `suspend_data` round-trips and render oddly in admin UI).
+  - `id` uniqueness — within a single quiz module's `questions[]` array, ids must be unique. Duplicates 400 with `path: "quizQuestions.<moduleId>[<idx>].id"` and `message: "duplicate id"`. Prevents attempt-history collisions in `suspend_data` quiz answer keying.
+  - `prompt` — non-empty string.
+  - `type` ∈ {single-choice, multi-choice, true-false}.
+  - `choices` — array with ≥ 2 entries; each choice has `id` (same regex), `label` (non-empty string), `correct` (boolean).
+  - **`single-choice`** — exactly one `correct: true`.
+  - **`multi-choice`** — ≥ 1 `correct: true`.
+  - **`true-false`** — exactly 2 choices, exactly 1 correct.
 - Unknown `moduleId` keys in either override map → 400 (better to fail loudly than silently ignore).
 
-**All override-field validation errors aggregate into a single 400 response** so the UI can highlight every malformed field at once instead of fix-one-discover-next. Body shape extends the locked 4xx contract from v0.3 with an optional `issues` array:
+**All shape-validation errors aggregate into a single 400 response** so the UI can highlight every malformed field at once instead of fix-one-discover-next. Body shape extends the locked 4xx contract from v0.3 with an optional `issues` array:
 
 ```jsonc
 {
@@ -998,12 +1010,35 @@ This means admin can mix-and-match: edit the description, accept the AI-rewritte
   "code": "OVERRIDE_VALIDATION",
   "issues": [
     { "path": "briefingHtml.c-abc-briefing", "message": "exceeds 8000 char cap (got 9420)" },
-    { "path": "quizQuestions.c-xyz-quiz[2].choices", "message": "single-choice requires exactly 1 correct, got 0" }
+    { "path": "quizQuestions.c-xyz-quiz[2].choices[1].label", "message": "must be non-empty string" },
+    { "path": "quizQuestions.c-xyz-quiz[3].id", "message": "duplicate id" }
   ]
 }
 ```
 
-Other 4xx errors (auth, missing fields, etc.) keep the simpler `{error, code?}` shape; only `OVERRIDE_VALIDATION` carries `issues`.
+`path` strings use **JSONPath-ish dotted notation** (`field.subfield[index].leaf`) for direct UI field-mapping. Other 4xx errors (auth, missing required fields, etc.) keep the simpler `{error, code?}` shape; only `OVERRIDE_VALIDATION` carries `issues`.
+
+#### HTML sanitization (silent strip + non-blocking warning)
+
+`briefingHtml[moduleId]` content runs through `npm:isomorphic-dompurify` server-side before persist (defense-in-depth — Lovable also runs DOMPurify client-side for preview render fidelity, but the edge function is the authoritative pass).
+
+- **Allowlist (matching the briefing prompt contract):** `<p>`, `<strong>`, `<em>`, `<h3>`, `<ul>`, `<li>`. Everything else stripped.
+- **No allowed attributes** — all attributes (including `style`, `class`, `id`, `onclick`, `href`) stripped from the allowlisted tags.
+- **Strip is silent — server returns 200 if shape validation passes.** Admin's manifest reflects the sanitized HTML.
+- **Non-blocking warning surfaced in the response `warnings` array** (same shape as v0.3 transform/enhance warnings):
+
+```jsonc
+{
+  "level": "info",
+  "code": "BRIEFING_HTML_SANITIZED",
+  "message": "Stripped non-allowlisted content from briefing HTML override.",
+  "moduleId": "c-abc-briefing"
+}
+```
+
+One warning per module where stripping occurred. Admin can investigate via Lovable's preview pane (which shows the sanitized output post-publish if they re-preview) but isn't blocked from publishing.
+
+This split — **shape errors block, sanitization warns** — keeps "make safe" and "shape correct" as orthogonal concerns. Admins get loud feedback when their structure is wrong (fix-and-retry) and quiet feedback when their formatting was opinionated about (proceed-and-investigate).
 
 ### Resolved questions
 
