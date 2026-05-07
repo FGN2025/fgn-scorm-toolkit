@@ -725,7 +725,13 @@ Deno.serve(async (req) => {
         // is via skipModuleIds passed to enhanceCourse below.
         slots.push('briefingHtml', 'quizQuestions');
       }
-      if (wantsCover && openaiKey) {
+      // v0.1: dryRun never triggers enhanceCover. Cover regen is
+      // expensive ($0.04-0.08 + 30-60s per call) and admins iterating
+      // through preview cycles would burn tokens for no UX win since
+      // covers don't depend on text edits. Cover regen runs once on
+      // publish (dryRun: false) if requested. See PHASE_2_SPEC.md
+      // §"Cover image in v0.1".
+      if (wantsCover && openaiKey && !body.dryRun) {
         slots.push('coverImage');
       }
 
@@ -760,6 +766,22 @@ Deno.serve(async (req) => {
           });
         }
       }
+    }
+
+    // --------------------------------------------------------------
+    // 9.7 v0.1 dryRun: short-circuit before persistence.
+    //     Returns the enhanced manifest so the Course Builder UI can
+    //     render the editable preview pane. No storage uploads, no
+    //     scorm_courses upsert, no ZIP packaging, no cover regen
+    //     (suppressed at slot push above). Override application from
+    //     §9.4 has already mutated courseManifest in place.
+    // --------------------------------------------------------------
+    if (body.dryRun === true) {
+      return jsonOk({
+        status: 'preview',
+        manifest: courseManifest,
+        warnings: [...transformWarnings, ...enhanceWarnings],
+      });
     }
 
     // --------------------------------------------------------------
