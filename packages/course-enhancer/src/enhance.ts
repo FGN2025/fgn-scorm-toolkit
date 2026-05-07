@@ -141,6 +141,18 @@ export interface EnhanceOptions extends EnhanceClientOptions {
   academyAppKey?: string;
   /** Override the default fgn.academy edge function endpoint. */
   academyEndpoint?: string;
+
+  /**
+   * v0.1 — module ids to skip during per-module slot processing
+   * (briefingHtml, quizQuestions). When the caller has applied admin
+   * overrides directly to the manifest before calling enhanceCourse,
+   * those overridden modules' ids go in here so the enhancer doesn't
+   * regenerate over them. Course-level slots like 'description' are
+   * skipped by omitting them from `slots` rather than via this set.
+   *
+   * No-op when undefined (default v0 behavior).
+   */
+  skipModuleIds?: Set<string>;
 }
 
 export interface EnhanceResult {
@@ -277,8 +289,11 @@ export async function enhanceCourse(
 
   // ---- Briefing slot — runs once per BriefingModule ----
   if (slots.includes('briefingHtml') && client) {
+    // v0.1: filter out admin-overridden modules. The override is already
+    // applied to draft.modules; we just skip the regeneration step here.
     const briefings = draft.modules.filter(
-      (m): m is BriefingModule => m.type === 'briefing',
+      (m): m is BriefingModule =>
+        m.type === 'briefing' && !opts.skipModuleIds?.has(m.id),
     );
     stats.briefingHtml.attempted = briefings.length;
     for (const briefing of briefings) {
@@ -309,7 +324,11 @@ export async function enhanceCourse(
 
   // ---- Quiz slot — runs once per QuizModule ----
   if (slots.includes('quizQuestions') && client) {
-    const quizzes = draft.modules.filter((m): m is QuizModule => m.type === 'quiz');
+    // v0.1: filter out admin-overridden quiz modules.
+    const quizzes = draft.modules.filter(
+      (m): m is QuizModule =>
+        m.type === 'quiz' && !opts.skipModuleIds?.has(m.id),
+    );
     stats.quizQuestions.attempted = quizzes.length;
     for (const quiz of quizzes) {
       const sibling = findSiblingChallengeForQuiz(draft, quiz);
