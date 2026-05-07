@@ -20,7 +20,7 @@
  * SDK directly.
  */
 
-import OpenAI from 'https://esm.sh/openai@4.95.0';
+import OpenAI from 'npm:openai@4.95.0';
 import { Buffer } from 'node:buffer';
 
 export type ImageQuality = 'low' | 'medium' | 'high';
