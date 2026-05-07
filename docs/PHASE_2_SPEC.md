@@ -719,15 +719,27 @@ Content-Type: application/json
 }
 ```
 
-**Locked anchors (2026-05-06, Lovable confirmation):**
+**Locked anchors (2026-05-06, refined 2026-05-07; Lovable confirmation):**
 
 | Field | Behavior |
 |---|---|
 | `session_id` | Client-generated UUID v4, stable per Player mount. Server stores in `scorm_course_progress.last_session_id`. No server-issued session handshake. |
-| `session_time_seconds` | Monotonic seconds since Player mount. Server adds to `total_time_seconds` on every upsert. Pause/blur handling is the Player's call; server doesn't validate gaps. *(Note: cumulative-since-mount + server `+=` would double-count; Player should send delta-since-last-flush. Confirmed approach to be locked when hook lands.)* |
-| `scorm_suspend_data` | Stored as opaque text. Server 413s on > 4096 bytes (clear signal to clients). Position-keyed envelope (see `ScormSuspendDataV1` below) for ~10x density vs UUIDs. |
-| `lesson_status` | One of `not attempted | incomplete | completed | passed | failed | browsed`. CHECK-constrained server-side; non-conforming values return 400. |
+| `session_time_seconds` | **Delta since last successful flush**, never cumulative-since-mount. Server upsert is `total_time_seconds = total_time_seconds + EXCLUDED.session_time_seconds`, period — keeps the server stateless on time math. Server CHECK-constrains `>= 0` (rejects negatives with 400) and caps a single-flush delta at **3600 seconds** (rejects above as clock-skew/bug rather than silently inflating totals). Backfills > 1 hour go through a separate admin path, not the learner sync. |
+| `scorm_suspend_data` | Stored as opaque text. Server 413s on > 4096 bytes. Position-keyed envelope (see `ScormSuspendDataV1` below) for ~10x density vs UUIDs. |
+| `lesson_status` | One of `not attempted | incomplete | completed | passed | failed | browsed`. CHECK-constrained server-side; non-conforming values return 400. **No-regress-from-passed guard:** once `lesson_status` flips to `passed`, subsequent payloads may update `score_raw` upward but cannot flip status back to `incomplete` or `failed`. Matches SCORM 1.2 spirit and prevents a late-arriving stale flush from un-passing a course. (Client derivation already converges to `passed` once thresholds are met, so this is server defense-in-depth.) |
+| `score_raw` | Last-write-wins with the no-regress guard above. Server takes whatever client sends; the credential write uses max-of (kept on UPSERT conflict). |
 | `flush` | Client-side debounce-bypass signal for terminal events (course completion). Server ignores the field; treats the call identically to a debounced one. |
+
+**Hook-side retry semantics (locked 2026-05-07):**
+
+The hook tracks `lastFlushedTimeSeconds: number` in a ref. On every flush:
+
+1. Compute `delta = sessionTimeSeconds - lastFlushedTimeSeconds`.
+2. POST with `session_time_seconds: delta`.
+3. **Only advance the ref on a 2xx response.** Non-2xx → leave the ref where it is, retry on next state change with the same delta + any new accumulated time.
+4. The completion-bypass `flush: true` payload uses the same code path; whatever delta has accumulated since the last successful flush gets sent, server treats it identically to a debounced call.
+
+This makes double-fires impossible from the contract: only client-side bugs (advancing the ref before the response confirms success) can cause double-counting. Server stays naive; client owns the at-least-once-but-not-double semantics.
 
 **Suspend-data envelope (`ScormSuspendDataV1`):**
 
