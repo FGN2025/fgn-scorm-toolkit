@@ -81,6 +81,22 @@ import type { QuizQuestion } from './_lib/course-types.ts';
 // includes images, scripts, SVG, or MathML; the prompt contract
 // pins it to text-formatting tags only.
 const SANITIZE_ALLOWED_TAGS = new Set(['p', 'strong', 'em', 'h3', 'ul', 'li']);
+// "Block tags" are stripped along with their content. Matches DOMPurify's
+// default behavior for unsafe content carriers -- the text inside
+// <script> / <style> / <iframe> / etc. shouldn't leak as plain text
+// after the tag is removed (executable in a script context, CSS rules
+// in a style context, inline-attack-vector in iframes).
+const SANITIZE_BLOCK_TAGS = ['script', 'style', 'iframe', 'noscript', 'object', 'embed', 'template', 'svg', 'math'];
+const BLOCK_TAGS_RE = new RegExp(
+  `<(${SANITIZE_BLOCK_TAGS.join('|')})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`,
+  'gi',
+);
+// Unclosed block tags that still might appear (e.g., `<script>` without
+// a closing tag): drop everything from the open tag to end of string.
+const UNCLOSED_BLOCK_TAGS_RE = new RegExp(
+  `<(${SANITIZE_BLOCK_TAGS.join('|')})\\b[^>]*>[\\s\\S]*$`,
+  'gi',
+);
 const TAG_RE = /<([^>]+)>/g;
 const TAG_NAME_RE = /^\/?([a-zA-Z][a-zA-Z0-9]*)/;
 // eslint-disable-next-line no-control-regex
@@ -90,12 +106,17 @@ function sanitizeBriefingHtml(html: string): {
   sanitized: string;
   didStrip: boolean;
 } {
-  // 1. Strip control chars / null bytes (defense against weird payloads).
+  // 1. Strip control chars / null bytes.
   let s = html.replace(CONTROL_CHAR_RE, '');
-  // 2. For each tag in the input:
-  //      - If the tag name isn't in the allowlist, drop the entire tag.
+  // 2. Strip block tags WITH their content (script, style, iframe, etc.).
+  //    Two passes: closed first (greedy minimal match), then unclosed.
+  s = s.replace(BLOCK_TAGS_RE, '');
+  s = s.replace(UNCLOSED_BLOCK_TAGS_RE, '');
+  // 3. For each remaining tag:
+  //      - If the tag name isn't in the allowlist, drop the tag wrapper
+  //        but keep text children (so e.g. `<div>hello</div>` -> `hello`).
   //      - If it is, emit just `<tagName>` or `</tagName>` -- attributes
-  //        are stripped (zero allowed attrs per spec).
+  //        stripped (zero allowed attrs per spec).
   s = s.replace(TAG_RE, (_match, contents: string) => {
     const tagMatch = contents.match(TAG_NAME_RE);
     if (!tagMatch) return ''; // malformed tag-like string, strip
