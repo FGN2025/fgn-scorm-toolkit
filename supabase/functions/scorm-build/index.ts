@@ -50,7 +50,6 @@
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import DOMPurify from 'npm:isomorphic-dompurify';
 import { transform } from './_lib/scorm-builder/transform.ts';
 import {
   createSupabaseFetcher,
@@ -68,27 +67,44 @@ import type { QuizQuestion } from './_lib/course-types.ts';
 // v0.1 -- briefing HTML sanitization. Strict allowlist matching the
 // briefing prompt contract. Lovable also runs DOMPurify client-side
 // for preview render fidelity; this server-side pass is the
-// authoritative strip-and-strip-quietly per the locked v0.1 contract
-// (PHASE_2_SPEC.md §"HTML sanitization").
-const SANITIZE_ALLOWED_TAGS = ['p', 'strong', 'em', 'h3', 'ul', 'li'];
-const SANITIZE_ALLOWED_ATTR: string[] = [];
+// authoritative strip per the locked v0.1 contract (PHASE_2_SPEC.md
+// §"HTML sanitization").
+//
+// Implementation note: an earlier draft used `npm:isomorphic-dompurify`,
+// but that package depends on `jsdom` which has Node-native bindings
+// Deno's npm: resolver can't load (function failed at module init,
+// returning no CORS headers, browser saw "Failed to fetch"). Switched
+// to a Deno-native regex sanitizer with the exact same allowlist
+// semantics. The allowlist is narrow enough (6 tags, 0 attrs, all
+// formatting-only) that a regex pass is correct and safe; no need
+// for full HTML parsing or namespace awareness. Briefing HTML never
+// includes images, scripts, SVG, or MathML; the prompt contract
+// pins it to text-formatting tags only.
+const SANITIZE_ALLOWED_TAGS = new Set(['p', 'strong', 'em', 'h3', 'ul', 'li']);
+const TAG_RE = /<([^>]+)>/g;
+const TAG_NAME_RE = /^\/?([a-zA-Z][a-zA-Z0-9]*)/;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 function sanitizeBriefingHtml(html: string): {
   sanitized: string;
   didStrip: boolean;
 } {
-  const sanitized = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: SANITIZE_ALLOWED_TAGS,
-    ALLOWED_ATTR: SANITIZE_ALLOWED_ATTR,
+  // 1. Strip control chars / null bytes (defense against weird payloads).
+  let s = html.replace(CONTROL_CHAR_RE, '');
+  // 2. For each tag in the input:
+  //      - If the tag name isn't in the allowlist, drop the entire tag.
+  //      - If it is, emit just `<tagName>` or `</tagName>` -- attributes
+  //        are stripped (zero allowed attrs per spec).
+  s = s.replace(TAG_RE, (_match, contents: string) => {
+    const tagMatch = contents.match(TAG_NAME_RE);
+    if (!tagMatch) return ''; // malformed tag-like string, strip
+    const tagName = tagMatch[1]!.toLowerCase();
+    if (!SANITIZE_ALLOWED_TAGS.has(tagName)) return '';
+    const isClosing = contents.trimStart().startsWith('/');
+    return isClosing ? `</${tagName}>` : `<${tagName}>`;
   });
-  // Length-shrink heuristic for didStrip. Conservative: false
-  // positives (warning fires when nothing meaningful changed) are
-  // safer than false negatives (admin doesn't realize content was
-  // stripped). DOMPurify normalization may shorten by a few bytes
-  // even on safe input but the warning is informational and easy to
-  // verify by re-previewing.
-  const didStrip = sanitized.length < html.length;
-  return { sanitized, didStrip };
+  return { sanitized: s, didStrip: s.length < html.length };
 }
 
 const corsHeaders = {
