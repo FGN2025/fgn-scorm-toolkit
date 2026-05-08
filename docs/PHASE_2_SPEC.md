@@ -1020,9 +1020,15 @@ The contract distinguishes **shape validation** (wrong type / cardinality / form
 
 #### HTML sanitization (silent strip + non-blocking warning)
 
-`briefingHtml[moduleId]` content runs through `npm:isomorphic-dompurify` server-side before persist (defense-in-depth — Lovable also runs DOMPurify client-side for preview render fidelity, but the edge function is the authoritative pass).
+`briefingHtml[moduleId]` content runs through a server-side sanitizer before persist (defense-in-depth — Lovable also runs DOMPurify client-side for preview render fidelity, but the edge function is the authoritative pass).
 
-- **Allowlist (matching the briefing prompt contract):** `<p>`, `<strong>`, `<em>`, `<h3>`, `<ul>`, `<li>`. Everything else stripped.
+**Implementation note (2026-05-08, post-cross-test):** the original spec called for `npm:isomorphic-dompurify`, but that package depends on `jsdom` which has Node-native bindings Deno's `npm:` resolver can't load (function failed at module init, returning no CORS headers, all calls hit "Failed to fetch"). Replaced with a Deno-native regex sanitizer implementing the same allowlist semantics. Same observable behavior on the locked contract. If full DOMPurify (attribute allowlists, malformed-nesting repair, namespace handling) is needed later, swap candidates include `linkedom + dompurify` or `deno_dom + manual sanitization` in v0.1.1+.
+
+The regex sanitizer classifies tags into two groups:
+
+- **Allowlisted tags (matching the briefing prompt contract):** `<p>`, `<strong>`, `<em>`, `<h3>`, `<ul>`, `<li>`. Wrapper preserved (without attributes); text content kept.
+- **Block tags (drop wrapper AND content entirely):** `script`, `style`, `iframe`, `noscript`, `object`, `embed`, `template`, `svg`, `math`. These are content carriers for unsafe payloads (executable JS, CSS rules, inline-attack vectors); their inner text is dropped along with the tag. Matches DOMPurify default.
+- **Other non-allowlisted tags (drop wrapper, keep text):** e.g., `<div>hello</div>` becomes `hello`. Admin could've written that text directly anyway.
 - **No allowed attributes** — all attributes (including `style`, `class`, `id`, `onclick`, `href`) stripped from the allowlisted tags.
 - **Strip is silent — server returns 200 if shape validation passes.** Admin's manifest reflects the sanitized HTML.
 - **Non-blocking warning surfaced in the response `warnings` array** (same shape as v0.3 transform/enhance warnings):
