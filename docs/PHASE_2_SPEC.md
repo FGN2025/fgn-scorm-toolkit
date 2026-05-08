@@ -1018,6 +1018,26 @@ The contract distinguishes **shape validation** (wrong type / cardinality / form
 
 `path` strings use **JSONPath-ish dotted notation** (`field.subfield[index].leaf`) for direct UI field-mapping. Other 4xx errors (auth, missing required fields, etc.) keep the simpler `{error, code?}` shape; only `OVERRIDE_VALIDATION` carries `issues`.
 
+**Path format reference for UI parsers:**
+
+- Top-level fields are `camelCase` keywords from the request body (`briefingHtml`, `quizQuestions`).
+- Module ids appear as path segments after the field keyword. **Module ids contain hyphens** (e.g., `c-48b739d9-briefing`, `c-1c899b1a-quiz`); this is by design and doesn't affect parsing if you split on `.` and `[index]` only.
+- Array elements use `[index]` syntax with zero-based integers.
+- Sub-fields use `.fieldName` after the array element.
+
+Concrete examples:
+
+| Path | Meaning |
+|---|---|
+| `briefingHtml.c-48b739d9-briefing` | Top-level briefing override for module `c-48b739d9-briefing`. Issue applies to the whole HTML string. |
+| `quizQuestions.c-1c899b1a-quiz` | Top-level quiz override for that module. Issue applies to the whole questions array. |
+| `quizQuestions.c-1c899b1a-quiz[2].id` | The `id` field of the quiz override's third question (index 2). |
+| `quizQuestions.c-1c899b1a-quiz[2].choices[1].label` | The `label` field of the second choice (index 1) in the third question. |
+
+**Parser hint:** tokenize with a regex like `/(\w[\w-]*)|\[(\d+)\]/g` over the full path. The first capture group matches a key segment (word chars + hyphens); the second matches a bracketed array index. Don't naively `split('.')` on the entire path because module ids contain dots in some legacy cases, and don't split on `-` because module ids contain them legitimately. The bracket-index syntax disambiguates array access from key access.
+
+The same path string format is used for both `OVERRIDE_VALIDATION` issues (this section) and any future structured-error responses; UI consumers can build one parser and reuse it.
+
 #### HTML sanitization (silent strip + non-blocking warning)
 
 `briefingHtml[moduleId]` content runs through a server-side sanitizer before persist (defense-in-depth — Lovable also runs DOMPurify client-side for preview render fidelity, but the edge function is the authoritative pass).

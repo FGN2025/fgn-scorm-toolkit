@@ -676,7 +676,10 @@ Deno.serve(async (req) => {
     // need to be `let` rather than `const`.
     let courseManifest = transformResult.course;
     let assets = transformResult.assets;
-    const transformWarnings = transformResult.warnings;
+    // transformWarnings is `let` because v0.1.1 filters QUIZ_PLACEHOLDER_
+    // NEEDS_AUTHORING out of it post-override (the warning is misleading
+    // when admin has provided real quiz questions via override).
+    let transformWarnings = transformResult.warnings;
 
     // Block on error-level warnings (e.g., COVER_IMAGE_FETCH_FAILED is
     // a warn, not an error -- passes through; ChallengeNotPublished
@@ -772,6 +775,26 @@ Deno.serve(async (req) => {
       ...overrideQuizIds,
     ]);
 
+    // v0.1.1 polish: drop QUIZ_PLACEHOLDER_NEEDS_AUTHORING from
+    // transformWarnings when admin has overridden every quiz module
+    // in the manifest. The warning is emitted by transform() based on
+    // the source challenge's placeholder quiz, but admin's override
+    // replaced that placeholder with real questions -- the warning
+    // is misleading post-override. Conservative filter: only drop if
+    // ALL quiz modules have overrides; partial override keeps the
+    // warning so admin sees there's still authoring to do elsewhere.
+    const allQuizModuleIds = courseManifest.modules
+      .filter((m) => m.type === 'quiz')
+      .map((m) => m.id);
+    const allQuizzesOverridden =
+      allQuizModuleIds.length > 0 &&
+      allQuizModuleIds.every((id) => overrideQuizIds.includes(id));
+    if (allQuizzesOverridden) {
+      transformWarnings = transformWarnings.filter(
+        (w) => w.code !== 'QUIZ_PLACEHOLDER_NEEDS_AUTHORING',
+      );
+    }
+
     // --------------------------------------------------------------
     // 9.5 Optional AI enhancement (Steps 5+6).
     //     Single call to enhanceCourse with whatever slots the body
@@ -851,7 +874,21 @@ Deno.serve(async (req) => {
           });
           courseManifest = result.course;
           assets = [...assets, ...result.assets];
-          enhanceWarnings.push(...result.warnings);
+          // v0.1.1 polish: drop ENHANCER_NO_OUTPUT when zero slots
+          // were attempted. Happens when admin overrides cover the
+          // entire enhanceable surface -- enhancer ran but had nothing
+          // to do. Genuine enhancer failures still keep the warning
+          // because attempted > 0 + succeeded == 0 distinguishes them.
+          const totalAttempts =
+            result.stats.description.attempted +
+            result.stats.briefingHtml.attempted +
+            result.stats.quizQuestions.attempted +
+            result.stats.coverImage.attempted;
+          const enhanceWarningsToPush =
+            totalAttempts === 0
+              ? result.warnings.filter((w) => w.code !== 'ENHANCER_NO_OUTPUT')
+              : result.warnings;
+          enhanceWarnings.push(...enhanceWarningsToPush);
         } catch (err) {
           enhanceWarnings.push({
             level: 'warn',
